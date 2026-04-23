@@ -1,0 +1,49 @@
+{
+  "name": "cronograma-francos",
+  "version": "1.0.0",
+  "description": "Cronograma Mensual de Turnos Hospitalarios",
+  "main": "main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron:dev": "electron .",
+    "electron:build": "vite build && electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "com.hospital.cronograma",
+    "productName": "Cronograma Francos",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Cronograma Francos"
+    }
+  },
+  "dependencies": {
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "xlsx-js-style": "^1.2.0",
+    "lucide-react": "^0.562.0",
+    "@cloudinary/react": "^1.13.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "vite": "^7.3.1"
+  }
+}

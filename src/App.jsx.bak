@@ -1,0 +1,1613 @@
+import { useState, useRef, useEffect, useMemo } from "react";
+import * as XLSX from "xlsx";
+
+const MONTHS = [
+  "Enero","Febrero","Marzo","Abril","Mayo","Junio",
+  "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre",
+];
+const WDAYS = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
+
+// ─── getCellStyle ───────────────────────────────────────────
+// isFrancoWeekendPair: true solo cuando SAB+DOM consecutivos ambos son franco
+function getCellStyle(ct, isFrancoWeekendPair) {
+  const border = isFrancoWeekendPair ? "2px solid #000" : "1px solid #e2e8f0";
+
+  switch(ct) {
+    case "TM":    return { label:"M",   textColor:"#1d4ed8", bg:"#fff",    bold:true,  border };
+    case "TT":    return { label:"T",   textColor:"#15803d", bg:"#fff",    bold:true,  border };
+    case "TN":    return { label:"N",   textColor:"#000",    bg:"#fff",    bold:true,  border };
+    case "F":     return { label:"F",   textColor:"#374151", bg:"#fff",    bold:false, border };
+    case "FE":    return { label:"F°",  textColor:"#dc2626", bg:"#fff",    bold:true,  border, specialFont:true };
+    case "LIC":   return { label:"Lic", textColor:"#7c2d12", bg:"#fef9c3", bold:true,  border:"1px solid #d97706" };
+    case "EARLY": return { label:"M",   textColor:"#9d174d", bg:"#fce7f3", bold:true,  border:"2px solid #f9a8d4" }; // rosado completo
+    case "LATE":  return { label:"M",   textColor:"#166534", bg:"#dcfce7", bold:true,  border:"2px solid #86efac" }; // verde completo
+    case "LAR":   return { label:"LAR", textColor:"#92400e", bg:"#fef3c7", bold:true,  border:"1px solid #fbbf24" };
+    case "PM":    return { label:"PM",  textColor:"#1e3a8a", bg:"#dbeafe", bold:true,  border:"1px solid #93c5fd" };
+    default:      return { label:"",    textColor:"#94a3b8", bg:"#fff",    bold:false, border };
+  }
+}
+
+const CELL_TYPES = {
+  TM:    { label: "M",   bg: "#fff",    fg: "#1d4ed8", hours: 7  },
+  TT:    { label: "T",   bg: "#fff",    fg: "#15803d", hours: 7  },
+  TN:    { label: "N",   bg: "#fff",    fg: "#000",    hours: 10 },
+  F:     { label: "F",   bg: "#fff",    fg: "#374151", hours: 0  },
+  FE:    { label: "F°",  bg: "#fff",    fg: "#dc2626", hours: 0  },
+  LIC:   { label: "Lic", bg: "#fef9c3", fg: "#7c2d12", hours: 0 },
+  EARLY: { label: "M",   bg: "#fce7f3", fg: "#9d174d", hours: 7  },
+  LATE:  { label: "M",   bg: "#dcfce7", fg: "#166534", hours: 7  },
+  LAR:   { label: "LAR", bg: "#fef3c7", fg: "#92400e", hours: 0  },
+  PM:    { label: "PM",  bg: "#dbeafe", fg: "#1e3a8a", hours: 0  },
+  "---": { label: "",    bg: "#fff",    fg: "#94a3b8", hours: 0  },
+};
+
+const REGIMES = {
+  R15: { label: "Régimen 15",   hours: 160 },
+  R27: { label: "Régimen 27",   hours: 144 },
+  H24: { label: "24hs Semanal", hours: 88  },
+};
+
+const getDaysInMonth = (y, m) => new Date(y, m + 1, 0).getDate();
+const getDow         = (y, m, d) => new Date(y, m, d).getDay();
+
+function effectiveHours(emp) {
+  const base = REGIMES[emp.regime]?.hours ?? 160;
+  return emp.reduction > 0 ? Math.round(base * (1 - emp.reduction / 100)) : base;
+}
+
+function workedHours(schedule, empId, days) {
+  let total = 0;
+  for (let d = 1; d <= days; d++) {
+    const ct = schedule[`${empId}-${d}`];
+    if (ct && CELL_TYPES[ct]) total += CELL_TYPES[ct].hours;
+  }
+  return total;
+}
+
+function countPerTurn(schedule, employees, day) {
+  const c = { TM: 0, TT: 0, TN: 0 };
+  for (const emp of employees) {
+    const ct = schedule[`${emp.id}-${day}`];
+    if (["TM","EARLY","LATE"].includes(ct)) c.TM++;
+    else if (ct === "TT") c.TT++;
+    else if (ct === "TN") c.TN++;
+  }
+  return c;
+}
+
+const INITIAL_EMPLOYEES = [
+  { id: 1,  name: "Spinoza Claudia",      regime: "R27", turn: "TM", reduction: 0,  note: "" },
+  { id: 2,  name: "Nuñez Celestina",      regime: "R27", turn: "TM", reduction: 0,  note: "" },
+  { id: 3,  name: "Ajaya Veronica",       regime: "R27", turn: "TM", reduction: 25, note: "Red.25%" },
+  { id: 4,  name: "Lazzaro Claudia",      regime: "R27", turn: "TM", reduction: 0,  note: "" },
+  { id: 5,  name: "Morganti Gisela",      regime: "R27", turn: "TM", reduction: 0,  note: "" },
+  { id: 6,  name: "Quiroga Jesica",       regime: "R27", turn: "TM", reduction: 0,  note: "" },
+  { id: 7,  name: "Marino Laura",         regime: "R27", turn: "TM", reduction: 0,  note: "" },
+  { id: 8,  name: "Martinez Yenny",       regime: "R15", turn: "TM", reduction: 0,  note: "" },
+  { id: 9,  name: "Quezada Daiana",       regime: "R15", turn: "TM", reduction: 0,  note: "Ingr.09/25" },
+  { id: 10, name: "Dominguez Yamila",     regime: "R15", turn: "TM", reduction: 0,  note: "" },
+  { id: 11, name: "Venturini Geraldine",  regime: "R15", turn: "TM", reduction: 0,  note: "" },
+  { id: 12, name: "Pereira Gisel",        regime: "R15", turn: "TM", reduction: 0,  note: "" },
+  { id: 13, name: "Abarza Alejandra",     regime: "R27", turn: "TT", reduction: 0,  note: "" },
+  { id: 14, name: "Nievas Eliana",        regime: "R27", turn: "TT", reduction: 0,  note: "" },
+  { id: 15, name: "Peña Janet",           regime: "R27", turn: "TT", reduction: 0,  note: "" },
+  { id: 16, name: "Aguirre Tamara",       regime: "R15", turn: "TT", reduction: 0,  note: "Ingr.06/25" },
+  { id: 17, name: "Mardones Claudia",     regime: "R15", turn: "TT", reduction: 0,  note: "" },
+  { id: 18, name: "Condori Joana",        regime: "R27", turn: "TN", reduction: 0,  note: "" },
+  { id: 19, name: "Bullones Priscila",    regime: "R15", turn: "TN", reduction: 0,  note: "" },
+  { id: 20, name: "Garcia Laura",         regime: "R15", turn: "TN", reduction: 0,  note: "" },
+  { id: 21, name: "Castilo Natalia",      regime: "R15", turn: "TN", reduction: 0,  note: "" },
+  { id: 22, name: "Aguirre Mirian",       regime: "H24", turn: "TN", reduction: 0,  note: "24hs" },
+  { id: 23, name: "Gomez Betiana",        regime: "R15", turn: "TN", reduction: 0,  note: "" },
+  { id: 24, name: "Quispe Andrea",        regime: "R15", turn: "TN", reduction: 0,  note: "" },
+  { id: 25, name: "Diaz Eliana",          regime: "R15", turn: "TN", reduction: 0,  note: "" },
+  { id: 26, name: "Olmedo Melisa",        regime: "R15", turn: "TN", reduction: 0,  note: "" },
+  { id: 27, name: "Bustos Elizabeth",     regime: "R15", turn: "TN", reduction: 0,  note: "" },
+  { id: 28, name: "Perez Sabrina",        regime: "R15", turn: "TN", reduction: 0,  note: "" },
+  { id: 29, name: "Siles Liliana",        regime: "R27", turn: "TN", reduction: 0,  note: "Part.med." },
+];
+
+const isWorkShift = (ct) => ["TM","TT","TN","EARLY","LATE"].includes(ct);
+const MAX_CONSECUTIVE = { TM: 4, TT: 4, TN: 2 };
+
+function consecutivesBefore(next, empId, day) {
+  let count = 0;
+  for (let d = day - 1; d >= 1; d--) {
+    if (isWorkShift(next[`${empId}-${d}`])) count++;
+    else break;
+  }
+  return count;
+}
+
+function countPerTurnInNext(next, employees, day, turn) {
+  let c = 0;
+  for (const emp of employees) {
+    const ct = next[`${emp.id}-${day}`];
+    if (turn === "TM" && ["TM","EARLY","LATE"].includes(ct)) c++;
+    else if (turn === "TT" && ct === "TT") c++;
+    else if (turn === "TN" && ct === "TN") c++;
+  }
+  return c;
+}
+
+// ── helper: ¿puede este empleado cubrir un turno distinto al suyo? ──
+// Regla: reducción > 0 o régimen H24 → SOLO su turno designado
+// El resto (R15/R27 sin reducción) → puede cubrir cualquier turno
+const canCoverOtherTurn = (emp) => emp.reduction === 0 && emp.regime !== "H24";
+
+function autoFillAll(employees, schedule, dayInfo, daysInMonth, getTarget) {
+  const next = { ...schedule };
+  const byTurn = { TM: [], TT: [], TN: [] };
+  for (const emp of employees) {
+    if (byTurn[emp.turn]) byTurn[emp.turn].push(emp);
+  }
+
+  // ── FASE 0: respetar FE y LIC ya cargados — no se tocan nunca ──
+  // (ya están en `next` porque copiamos `schedule`)
+  // Identifica días bloqueados por empleado
+  const blockedDay = (empId, day) => {
+    const v = next[`${empId}-${day}`];
+    return v === "FE" || v === "LIC";
+  };
+
+  // ── FASE 1: garantizar 1 fin de semana completo (SAB+DOM) libre ──
+  // Busca pares SAB+DOM donde ambos estén libres o puedan liberarse
+  // Si ya hay un FE/LIC en SAB o DOM de un par, ese par cuenta como libre
+  const weekendPairs = []; // [{sat, sun}]
+  for (const d of dayInfo) {
+    if (d.isSat) {
+      const sun = dayInfo.find(x => x.day === d.day + 1 && x.isSunday);
+      if (sun) weekendPairs.push({ sat: d.day, sun: sun.day });
+    }
+  }
+
+  employees.forEach((emp, empIdx) => {
+    // ¿Ya tiene un fin de semana donde ambos son libres/FE/LIC?
+    const isFreeOrSpecial = (day) => {
+      const v = next[`${emp.id}-${day}`];
+      return !v || v === "F" || v === "FE" || v === "LIC" || v === "LAR";
+    };
+
+    const hasWeekend = weekendPairs.some(p => isFreeOrSpecial(p.sat) && isFreeOrSpecial(p.sun));
+    if (!hasWeekend && weekendPairs.length > 0) {
+      // Elegir el par más conveniente: uno donde ninguno esté bloqueado con turno
+      const candidates = weekendPairs.filter(p =>
+        !blockedDay(emp.id, p.sat) && !blockedDay(emp.id, p.sun)
+      );
+      const pair = candidates[empIdx % candidates.length] ?? weekendPairs[empIdx % weekendPairs.length];
+      if (pair) {
+        if (!blockedDay(emp.id, pair.sat)) next[`${emp.id}-${pair.sat}`] = "F";
+        if (!blockedDay(emp.id, pair.sun)) next[`${emp.id}-${pair.sun}`] = "F";
+      }
+    }
+  });
+
+  // ── FASE 2: distribuir guardias en turno propio ──────────────
+  for (const turn of ["TM", "TT", "TN"]) {
+    const empsInTurn = byTurn[turn];
+    const maxConsec  = MAX_CONSECUTIVE[turn];
+
+    empsInTurn.forEach((emp, empIdx) => {
+      const target = getTarget(emp);
+      const tHours = CELL_TYPES[turn].hours;
+
+      // Días ya ocupados con FE/LIC/turno previo — no disponibles
+      const occupied = (day) => {
+        const v = next[`${emp.id}-${day}`];
+        return !!v; // cualquier valor ya asignado (F, FE, LIC, turno, etc.)
+      };
+
+      // Marcar como F todos los días aún vacíos (se sobreescribirán con turno luego)
+      const available = dayInfo
+        .filter(d => !occupied(d.day))
+        .map(d => d.day).sort((a, b) => a - b);
+
+      for (const d of available) next[`${emp.id}-${d}`] = "F";
+
+      // Calcular cuántas guardias necesita considerando LIC/FE ya cargadas
+      const workedSoFar = workedHours(next, emp.id, daysInMonth);
+      const needed = Math.max(0, Math.ceil((target - workedSoFar) / tHours));
+      if (needed === 0 || available.length === 0) return;
+
+      const paso   = available.length / needed;
+      const offset = (empIdx * 0.5 * paso) % available.length;
+      const toWork = new Set();
+      let   pos    = offset;
+
+      for (let i = 0; i < needed * 4 && toWork.size < needed; i++) {
+        const d = available[Math.round(pos) % available.length];
+        if (!toWork.has(d)) {
+          let racha = 0;
+          for (let dd = d - 1; dd >= 1; dd--) {
+            if (toWork.has(dd) || isWorkShift(next[`${emp.id}-${dd}`])) racha++;
+            else break;
+          }
+          if (racha < maxConsec) { toWork.add(d); pos += paso; } else { pos += 1; }
+        } else { pos += 1; }
+      }
+      for (const d of toWork) next[`${emp.id}-${d}`] = turn;
+    });
+  }
+
+  // ── FASE 3: garantizar MÍNIMO 4 por turno ───────────────────
+  let changed = true, passes = 0;
+  while (changed && passes < 15) {
+    changed = false; passes++;
+    for (const di of dayInfo) {
+      for (const turn of ["TM", "TT", "TN"]) {
+        let current = countPerTurnInNext(next, employees, di.day, turn);
+        if (current >= 4) continue;
+
+        const propios = byTurn[turn]
+          .filter(emp =>
+            next[`${emp.id}-${di.day}`] === "F" &&
+            !blockedDay(emp.id, di.day) &&
+            consecutivesBefore(next, emp.id, di.day) < MAX_CONSECUTIVE[turn]
+          )
+          .sort((a, b) => workedHours(next, a.id, daysInMonth) - workedHours(next, b.id, daysInMonth));
+
+        let needed = 4 - current;
+        for (let i = 0; i < needed && i < propios.length; i++) {
+          next[`${propios[i].id}-${di.day}`] = turn; changed = true;
+        }
+        current = countPerTurnInNext(next, employees, di.day, turn);
+        if (current >= 4) continue;
+
+        needed = 4 - current;
+        const foraneos = employees
+          .filter(emp =>
+            emp.turn !== turn &&
+            canCoverOtherTurn(emp) &&
+            next[`${emp.id}-${di.day}`] === "F" &&
+            !blockedDay(emp.id, di.day) &&
+            consecutivesBefore(next, emp.id, di.day) < MAX_CONSECUTIVE[emp.turn]
+          )
+          .sort((a, b) => workedHours(next, a.id, daysInMonth) - workedHours(next, b.id, daysInMonth));
+
+        for (let i = 0; i < needed && i < foraneos.length; i++) {
+          next[`${foraneos[i].id}-${di.day}`] = turn; changed = true;
+        }
+      }
+    }
+  }
+
+  // ── FASE 4: garantizar MÁXIMO 8 por turno ───────────────────
+  for (const di of dayInfo) {
+    for (const turn of ["TM", "TT", "TN"]) {
+      let current = countPerTurnInNext(next, employees, di.day, turn);
+      if (current <= 8) continue;
+      const sobrantes = byTurn[turn]
+        .filter(emp => {
+          const ct = next[`${emp.id}-${di.day}`];
+          return (ct === turn) && !blockedDay(emp.id, di.day);
+        })
+        .sort((a, b) => workedHours(next, b.id, daysInMonth) - workedHours(next, a.id, daysInMonth));
+      const exceso = current - 8;
+      for (let i = 0; i < exceso && i < sobrantes.length; i++) next[`${sobrantes[i].id}-${di.day}`] = "F";
+    }
+  }
+
+  // ── FASE 5: recortar exceso de horas por empleado ───────────
+  for (const emp of employees) {
+    const target = getTarget(emp);
+    let worked   = workedHours(next, emp.id, daysInMonth);
+    if (worked <= target) continue;
+
+    const tHours = CELL_TYPES[emp.turn]?.hours || 7;
+    const workDays = dayInfo
+      .filter(di => isWorkShift(next[`${emp.id}-${di.day}`]) && !blockedDay(emp.id, di.day))
+      .sort((a, b) => {
+        const ca = countPerTurnInNext(next, employees, a.day, emp.turn);
+        const cb = countPerTurnInNext(next, employees, b.day, emp.turn);
+        return cb - ca;
+      });
+
+    for (const di of workDays) {
+      if (worked <= target) break;
+      const current = countPerTurnInNext(next, employees, di.day, emp.turn);
+      if (current <= 4) continue;
+      next[`${emp.id}-${di.day}`] = "F";
+      worked -= tHours;
+    }
+  }
+
+  return next;
+}
+
+// ─── Helper: ¿es franco o vacío? ───────────────────────────
+const isFrancoOrEmpty = v => !v || v === "F" || v === "---";
+
+// ─── Calcular isFrancoWeekendPair para una celda ─────────────
+// Regla:
+//   - Si es SAB: par válido si el DOM siguiente (día+1) también es franco/vacío
+//   - Si es DOM y NO es el día 1 del mes: par válido si el SAB anterior (día-1) también es franco/vacío
+//   - Si es DOM día 1: NO se marca (sábado anterior pertenece al mes anterior, desconocido)
+function calcFrancoWeekendPair(empId, d, schedule, dayInfo) {
+  if (d.isSat) {
+    const nextDay = dayInfo.find(x => x.day === d.day + 1);
+    if (!nextDay || !nextDay.isSunday) return false;
+    const ctSat = schedule[`${empId}-${d.day}`];
+    const ctSun = schedule[`${empId}-${nextDay.day}`];
+    return isFrancoOrEmpty(ctSat) && isFrancoOrEmpty(ctSun);
+  }
+  if (d.isSunday) {
+    // Día 1 que cae domingo: sábado del mes anterior → desconocido, NO remarcar
+    if (d.day === 1) return false;
+    const prevDay = dayInfo.find(x => x.day === d.day - 1);
+    if (!prevDay || !prevDay.isSat) return false;
+    const ctSat = schedule[`${empId}-${prevDay.day}`];
+    const ctSun = schedule[`${empId}-${d.day}`];
+    return isFrancoOrEmpty(ctSat) && isFrancoOrEmpty(ctSun);
+  }
+  return false;
+}
+
+// ─── CELL CONTEXT MENU ──────────────────────────────────────
+function CellContextMenu({ empId, day, current, onSelect, children }) {
+  const [open, setOpen] = useState(false);
+  const [pos,  setPos]  = useState({ x: 0, y: 0 });
+  const menuRef = useRef();
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  return (
+    <div
+      onContextMenu={e => { e.preventDefault(); setPos({ x: e.clientX, y: e.clientY }); setOpen(true); }}
+    >
+      {children}
+      {open && (
+        <div ref={menuRef} style={{
+          position: "fixed", top: pos.y, left: pos.x, zIndex: 9999,
+          background: "#fff", border: "1px solid #cbd5e1", borderRadius: 8,
+          padding: 6, display: "flex", flexDirection: "column", gap: 3,
+          boxShadow: "0 8px 32px rgba(0,0,0,.75)", minWidth: 210,
+        }}>
+          {Object.entries(CELL_TYPES).map(([k, v]) => (
+            <button key={k} onClick={() => { onSelect(k); setOpen(false); }} style={{
+              background: current === k ? "#f1f5f9" : v.bg,
+              color: v.fg, border: "none", borderRadius: 5,
+              padding: "5px 12px", cursor: "pointer", fontSize: 12,
+              fontWeight: 700, textAlign: "left", opacity: current === k ? 0.5 : 1,
+              fontFamily: k === "FE" ? "'Georgia', serif" : "'Barlow Condensed', sans-serif",
+              letterSpacing: ".5px",
+              display: "flex", justifyContent: "space-between", gap: 10,
+            }}>
+              <span style={{ fontStyle: k === "FE" ? "italic" : "normal" }}>{v.label}</span>
+              <span style={{ fontSize: 10, fontWeight: 400, opacity: .7 }}>
+                {k === "TM" ? "07:00–14:00"
+                 : k === "TT" ? "14:00–21:00"
+                 : k === "TN" ? "21:00–07:00"
+                 : k === "F"  ? "Franco"
+                 : k === "FE" ? "Franco Especial"
+                 : k === "LIC"? "Licencia"
+                 : k === "LAR"? "Largo"
+                 : k === "PM" ? "PM"
+                 : k === "EARLY" ? "Sale antes"
+                 : k === "LATE"  ? "Sale después"
+                 : "Vacío"}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── MAIN APP ───────────────────────────────────────────────
+export default function HospitalScheduler({ currentUser, onLogout }) {
+  const now = new Date();
+  const [year,       setYear]       = useState(now.getFullYear());
+  const [month,      setMonth]      = useState(now.getMonth());
+  const [employees,  setEmployees]  = useState(INITIAL_EMPLOYEES);
+  const [schedule,   setSchedule]   = useState({});
+  const [holidays,   setHolidays]   = useState([]);
+  const [tab,        setTab]        = useState("schedule");
+  const [filterTurn, setFilterTurn] = useState("ALL");
+  const [service,    setService]    = useState("SIP 5");
+  const [beds,       setBeds]       = useState(30);
+  const [newHoliday, setNewHoliday] = useState("");
+  const [newEmp,     setNewEmp]     = useState({ name: "", regime: "R15", turn: "TM", reduction: 0, note: "" });
+  const [editEmpId,  setEditEmpId]  = useState(null);
+  const [editData,   setEditData]   = useState({});
+  const [showAlerts, setShowAlerts] = useState(true);
+
+  // ── Horas mensuales: deben confirmarse antes de armar el diagrama ──
+  const [hoursReady,    setHoursReady]    = useState(false);
+  const [hoursOverride, setHoursOverride] = useState({}); // empId → horas ajustadas
+
+  // ── Modo selección múltiple ──
+  // bulkMode: null | "LIC" | "LAR" | "FE"
+  const [bulkMode,     setBulkMode]     = useState(null);
+  const [bulkSelected, setBulkSelected] = useState(new Set());
+
+  // ── Drag & drop de filas ──
+  const [dragEmpId,  setDragEmpId]  = useState(null);
+  const [dragOverId, setDragOverId] = useState(null);
+
+  const handleDragStart = (empId) => setDragEmpId(empId);
+  const handleDragOver  = (e, empId) => { e.preventDefault(); setDragOverId(empId); };
+  const handleDrop      = (targetId) => {
+    if (!dragEmpId || dragEmpId === targetId) { setDragEmpId(null); setDragOverId(null); return; }
+    setEmployees(prev => {
+      const arr   = [...prev];
+      const fromI = arr.findIndex(e => e.id === dragEmpId);
+      const toI   = arr.findIndex(e => e.id === targetId);
+      // Solo permitir dentro del mismo turno
+      if (arr[fromI].turn !== arr[toI].turn) return prev;
+      const [moved] = arr.splice(fromI, 1);
+      arr.splice(toI, 0, moved);
+      return arr;
+    });
+    setDragEmpId(null); setDragOverId(null);
+  };
+  const handleDragEnd = () => { setDragEmpId(null); setDragOverId(null); };
+
+  // ── Jefe/a de servicio ──
+  const [jefeId, setJefeId] = useState(null);
+
+  // ── Horas objetivo con posible ajuste manual ──
+  const targetHours = (emp) => hoursOverride[emp.id] ?? effectiveHours(emp);
+
+  const daysInMonth = getDaysInMonth(year, month);
+
+  const dayInfo = useMemo(() => {
+    const arr = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dow = getDow(year, month, d);
+      arr.push({ day: d, dow, isSunday: dow === 0, isSat: dow === 6, isWeekend: dow === 0 || dow === 6, isHoliday: holidays.includes(d) });
+    }
+    return arr;
+  }, [year, month, daysInMonth, holidays]);
+
+  const visibleEmps = useMemo(() =>
+    filterTurn === "ALL" ? employees : employees.filter(e => e.turn === filterTurn),
+    [employees, filterTurn]
+  );
+
+  const alerts = useMemo(() => {
+    const out = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const di = dayInfo[d - 1];
+      const c  = countPerTurn(schedule, employees, d);
+      for (const t of ["TM", "TT", "TN"]) {
+        if (c[t] > 0 && c[t] < 4) out.push({ type: "danger",  msg: `Día ${d} ${WDAYS[di.dow]} — ${t}: ${c[t]} personas (mín 4)` });
+        else if (c[t] > 8)         out.push({ type: "danger",  msg: `Día ${d} ${WDAYS[di.dow]} — ${t}: ${c[t]} personas (máx 8)` });
+      }
+    }
+    for (const emp of employees) {
+      const maxConsec = MAX_CONSECUTIVE[emp.turn] ?? 4;
+      let streak = 0, streakStart = null;
+      for (let d = 1; d <= daysInMonth; d++) {
+        const ct = schedule[`${emp.id}-${d}`];
+        if (isWorkShift(ct)) {
+          if (streak === 0) streakStart = d;
+          streak++;
+          if (streak > maxConsec) {
+            out.push({ type: "danger", msg: `${emp.name} (${emp.turn}): ${streak} guardias consecutivas desde día ${streakStart} (máx ${maxConsec})` });
+            streak = 0; streakStart = null;
+          }
+        } else { streak = 0; streakStart = null; }
+      }
+    }
+    for (const emp of employees) {
+      const worked = workedHours(schedule, emp.id, daysInMonth);
+      const target = targetHours(emp);
+      const diff   = target - worked;
+      if (Math.abs(diff) > 14) out.push({
+        type: diff > 0 ? "info" : "warning",
+        msg: `${emp.name}: ${worked}hs cargadas / ${target}hs objetivo (${diff > 0 ? "faltan" : "sobran"} ${Math.abs(diff)}hs)`,
+      });
+    }
+    return out;
+  }, [schedule, employees, daysInMonth, dayInfo]);
+
+  // Cuando cambia mes/año, resetear confirmación
+  const prevMonth = () => {
+    if (month === 0) { setMonth(11); setYear(y => y - 1); } else setMonth(m => m - 1);
+    setSchedule({}); setBulkMode(null); setBulkSelected(new Set());
+    setHoursReady(false); setHoursOverride({});
+  };
+  const nextMonth = () => {
+    if (month === 11) { setMonth(0); setYear(y => y + 1); } else setMonth(m => m + 1);
+    setSchedule({}); setBulkMode(null); setBulkSelected(new Set());
+    setHoursReady(false); setHoursOverride({});
+  };
+
+  const setCellValue = (empId, day, type) => {
+    setSchedule(prev => {
+      const k = `${empId}-${day}`;
+      const next = { ...prev };
+      if (!type || next[k] === type) delete next[k];
+      else next[k] = type;
+      return next;
+    });
+  };
+
+  // ── Click en celda según modo ──
+  const handleCellClick = (empId, day) => {
+    if (!bulkMode) return; // sin modo bulk: click izquierdo no hace nada
+    const k = `${empId}-${day}`;
+    setBulkSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+  };
+
+  // ── Aplicar bulk ──
+  const applyBulk = () => {
+    if (!bulkMode || bulkSelected.size === 0) return;
+    setSchedule(prev => {
+      const next = { ...prev };
+      for (const k of bulkSelected) next[k] = bulkMode;
+      return next;
+    });
+    setBulkSelected(new Set());
+  };
+
+  const cancelBulk = () => { setBulkMode(null); setBulkSelected(new Set()); };
+
+  const doAutoFill = () => setSchedule(prev => autoFillAll(employees, prev, dayInfo, daysInMonth, targetHours));
+  const clearAll   = () => { if (window.confirm("¿Limpiar todo el diagrama?")) setSchedule({}); };
+
+  // ── EXPORT EXCEL ──
+  const exportExcel = () => {
+    // ── helpers ──────────────────────────────────────────────
+    const rgb = hex => hex.replace("#","").toUpperCase().padStart(6,"0");
+    const fc  = hex => ({ rgb: rgb(hex) });
+    const thinBorder  = (col="CBD5E0") => ({ style:"thin",   color:{ rgb:col } });
+    const medBorder   = (col="000000") => ({ style:"medium",  color:{ rgb:col } });
+    const allBorders  = (fn) => ({ top:fn(), bottom:fn(), left:fn(), right:fn() });
+    const mixBorder   = (tb,lr) => ({ top:tb, bottom:tb, left:lr, right:lr });
+
+    function getCellLabel(ct) {
+      switch(ct) {
+        case "TM": case "EARLY": case "LATE": return "M";
+        case "TT":  return "T";
+        case "TN":  return "N";
+        case "F":   return "F";
+        case "FE":  return "F°";
+        case "LIC": return "Lic";
+        case "LAR": return "LAR";
+        case "PM":  return "PM";
+        default:    return "";
+      }
+    }
+
+    // Colores de fondo/texto para cada tipo — exactamente los mismos que en pantalla
+    function cellStyle(ct, isSat, isSun, isHol) {
+      const isWeekend = isSat || isSun || isHol;
+      const bdr = allBorders(() => isWeekend ? medBorder() : thinBorder());
+      const base = {
+        alignment: { horizontal:"center", vertical:"center", wrapText:false },
+        border: bdr,
+      };
+
+      // Color de fondo de columna (sábado=celeste claro, domingo/feriado=amarillo)
+      const colBg = isHol ? "FFFF00" : isSun ? "FFFF00" : isSat ? "C7E3FF" : "FFFFFF";
+
+      const styledCell = (bgHex, fgHex, bold=true, italic=false) => ({
+        ...base,
+        fill: { patternType:"solid", fgColor:{ rgb: bgHex } },
+        font: { bold, italic, sz:8, name:"Arial", color:{ rgb: fgHex } },
+      });
+
+      switch(ct) {
+        case "TM":    return styledCell(colBg,   "1D4ED8", true);
+        case "TT":    return styledCell(colBg,   "15803D", true);
+        case "TN":    return styledCell(colBg,   "000000", true);
+        case "F":     return styledCell(colBg,   "374151", false);
+        case "FE":    return styledCell(colBg,   "DC2626", true, true);
+        case "EARLY": return styledCell("FCE7F3", "9D174D", true);
+        case "LATE":  return styledCell("DCFCE7", "166534", true);
+        case "LIC":   return styledCell("FEF9C3", "7C2D12", true);
+        case "LAR":   return styledCell("FEF3C7", "92400E", true);
+        case "PM":    return styledCell("DBEAFE", "1E3A8A", true);
+        default:      return styledCell(colBg,   "94A3B8", false);
+      }
+    }
+
+    const ws = {};
+    const merges = [];
+    const range  = { s:{r:0,c:0}, e:{r:0,c:0} };
+    let row = 0;
+
+    const set = (r, c, v, s) => {
+      ws[XLSX.utils.encode_cell({r,c})] = { v, t: typeof v==="number"?"n":"s", s };
+      if (r > range.e.r) range.e.r = r;
+      if (c > range.e.c) range.e.c = c;
+    };
+
+    // ── Fila 0: TÍTULO ────────────────────────────────────────
+    const NCOLS = 3; // Nombre | Régimen | T.
+    const totalCols = NCOLS + dayInfo.length + 4; // +Obj +Carg +Sáb +Dom
+
+    const titleStyle = {
+      alignment:{ horizontal:"center", vertical:"center" },
+      font:{ bold:true, sz:14, name:"Arial", color:{ rgb:"1E3A8A" } },
+      fill:{ patternType:"solid", fgColor:{ rgb:"FFFFFF" } },
+      border: allBorders(() => medBorder()),
+    };
+    set(row, 0, `CRONOGRAMA MENSUAL DE FRANCOS`, titleStyle);
+    for (let c=1; c<totalCols; c++) set(row, c, "", titleStyle);
+    merges.push({ s:{r:row,c:0}, e:{r:row,c:totalCols-1} });
+    row++;
+
+    // ── Fila 1: SERVICIO / MES / AÑO / JEFE ──────────────────
+    const infoStyle = (bold=false, fgHex="1E293B", bgHex="F8FAFC") => ({
+      alignment:{ horizontal:"left", vertical:"center" },
+      font:{ bold, sz:9, name:"Arial", color:{ rgb:fgHex } },
+      fill:{ patternType:"solid", fgColor:{ rgb:bgHex } },
+      border: allBorders(() => thinBorder()),
+    });
+    const infoCenter = (bold=false, fgHex="1E293B", bgHex="F8FAFC") => ({
+      ...infoStyle(bold,fgHex,bgHex), alignment:{ horizontal:"center", vertical:"center" },
+    });
+
+    // Bloque izquierdo: SERVICIO
+    const halfL = Math.floor(totalCols * 0.35);
+    const halfM = Math.floor(totalCols * 0.3);
+    const halfR = totalCols - halfL - halfM;
+
+    set(row, 0, `SERVICIO: ${service}`, infoStyle(true,"1E40AF","EFF6FF"));
+    for (let c=1; c<halfL; c++) set(row, c, "", infoStyle(true,"1E40AF","EFF6FF"));
+    merges.push({ s:{r:row,c:0}, e:{r:row,c:halfL-1} });
+
+    set(row, halfL, `Nº DE CAMAS: ${beds}`, infoCenter(true,"1E40AF","EFF6FF"));
+    for (let c=halfL+1; c<halfL+halfM; c++) set(row, c, "", infoCenter(true,"1E40AF","EFF6FF"));
+    merges.push({ s:{r:row,c:halfL}, e:{r:row,c:halfL+halfM-1} });
+
+    const jefeEmp = employees.find(e=>e.id===jefeId);
+    const rightLabel = `AÑO: ${year}    ${jefeEmp ? "Jefa: "+jefeEmp.name : ""}`;
+    set(row, halfL+halfM, rightLabel, infoStyle(true,"1E40AF","EFF6FF"));
+    for (let c=halfL+halfM+1; c<totalCols; c++) set(row, c, "", infoStyle(true,"1E40AF","EFF6FF"));
+    merges.push({ s:{r:row,c:halfL+halfM}, e:{r:row,c:totalCols-1} });
+    row++;
+
+    // ── Fila 2: ENCABEZADO DE COLUMNAS ───────────────────────
+    const colHdrBase = (bgHex="1E3A8A", fgHex="FFFFFF", bold=true) => ({
+      alignment:{ horizontal:"center", vertical:"center", wrapText:true },
+      font:{ bold, sz:8, name:"Arial", color:{ rgb:fgHex } },
+      fill:{ patternType:"solid", fgColor:{ rgb:bgHex } },
+      border: allBorders(() => medBorder()),
+    });
+
+    set(row, 0, "APELLIDO Y NOMBRE", colHdrBase());
+    set(row, 1, "RÉG.", colHdrBase());
+    set(row, 2, "T.", colHdrBase());
+
+    dayInfo.forEach((d, i) => {
+      const bgDay = d.isHoliday ? "FF0000" : d.isSunday ? "FFFF00" : d.isSat ? "ADD8E6" : "FFFFFF";
+      const fgDay = d.isHoliday ? "FFFFFF" : d.isSunday ? "1D4ED8" : d.isSat ? "1D4ED8" : "374151";
+      const dayHdrStyle = {
+        alignment:{ horizontal:"center", vertical:"center", wrapText:true },
+        font:{ bold:true, sz:7, name:"Arial", color:{ rgb:fgDay } },
+        fill:{ patternType:"solid", fgColor:{ rgb:bgDay } },
+        border: allBorders(() => d.isWeekend ? medBorder() : thinBorder()),
+      };
+      set(row, NCOLS+i, `${d.day}\n${WDAYS[d.dow]}`, dayHdrStyle);
+    });
+    set(row, NCOLS+dayInfo.length,   "OBJ.", colHdrBase("374151"));
+    set(row, NCOLS+dayInfo.length+1, "CARG.",colHdrBase("374151"));
+    set(row, NCOLS+dayInfo.length+2, "SÁB",  colHdrBase("ADD8E6","1D4ED8"));
+    set(row, NCOLS+dayInfo.length+3, "DOM",  colHdrBase("FFFF00","1D4ED8"));
+    row++;
+
+    // ── DATOS POR TURNO ───────────────────────────────────────
+    for (const turn of ["TM","TT","TN"]) {
+      const emps = employees.filter(e => e.turn === turn);
+      if (!emps.length) continue;
+
+      const turnLabel = turn==="TM" ? "TURNO MAÑANA  (07:00–14:00)"
+                      : turn==="TT" ? "TURNO TARDE   (14:00–21:00)"
+                      :               "TURNO NOCHE   (21:00–07:00)";
+      const turnFg = turn==="TM" ? "1D4ED8" : turn==="TT" ? "15803D" : "000000";
+      const turnBg = turn==="TM" ? "EFF6FF"  : turn==="TT" ? "F0FDF4"  : "F8FAFC";
+
+      const turnHdrStyle = {
+        alignment:{ horizontal:"left", vertical:"center" },
+        font:{ bold:true, sz:9, name:"Arial", color:{ rgb:turnFg } },
+        fill:{ patternType:"solid", fgColor:{ rgb:turnBg } },
+        border:{ top:medBorder(), bottom:medBorder(), left:medBorder(), right:medBorder() },
+      };
+      for (let c=0; c<totalCols; c++) set(row, c, c===0 ? turnLabel : "", turnHdrStyle);
+      merges.push({ s:{r:row,c:0}, e:{r:row,c:totalCols-1} });
+      row++;
+
+      // Empleados del turno
+      for (const emp of emps) {
+        const target  = targetHours(emp);
+        const worked  = workedHours(schedule, emp.id, daysInMonth);
+        const diff    = worked - target;
+        const diffFg  = Math.abs(diff)<=7 ? "059669" : diff>0 ? "F59E0B" : "EF4444";
+        const turnFgC = turn==="TM" ? "1D4ED8" : turn==="TT" ? "15803D" : "000000";
+
+        const nameS = {
+          alignment:{ horizontal:"left", vertical:"center" },
+          font:{ bold:false, sz:8, name:"Arial", color:{ rgb:"1E293B" } },
+          fill:{ patternType:"solid", fgColor:{ rgb:"FFFFFF" } },
+          border: allBorders(() => thinBorder()),
+        };
+        const metaS = (fgHex, bgHex="FFFFFF", bold=true) => ({
+          alignment:{ horizontal:"center", vertical:"center" },
+          font:{ bold, sz:8, name:"Arial", color:{ rgb:fgHex } },
+          fill:{ patternType:"solid", fgColor:{ rgb:bgHex } },
+          border: allBorders(() => thinBorder()),
+        });
+
+        set(row, 0, emp.name, nameS);
+        set(row, 1, emp.regime, metaS("475569"));
+        set(row, 2, emp.turn, metaS(turnFgC));
+
+        // Celdas de cada día
+        dayInfo.forEach((d, i) => {
+          const ct = schedule[`${emp.id}-${d.day}`] || "";
+          set(row, NCOLS+i, getCellLabel(ct), cellStyle(ct, d.isSat, d.isSunday, d.isHoliday));
+        });
+
+        set(row, NCOLS+dayInfo.length,   target, metaS("475569"));
+        set(row, NCOLS+dayInfo.length+1, worked, metaS(diffFg, "FFFFFF", true));
+        // Sábados trabajados
+        const satW = dayInfo.filter(d=>d.isSat    && isWorkShift(schedule[`${emp.id}-${d.day}`])).length;
+        const sunW = dayInfo.filter(d=>d.isSunday && isWorkShift(schedule[`${emp.id}-${d.day}`])).length;
+        set(row, NCOLS+dayInfo.length+2, satW||"", metaS("92400E","FFF7ED"));
+        set(row, NCOLS+dayInfo.length+3, sunW||"", metaS("1D4ED8","FFFF00"));
+        row++;
+      }
+
+      // Fila TOTAL POR TURNO
+      const totLblStyle = {
+        alignment:{ horizontal:"left", vertical:"center" },
+        font:{ bold:true, italic:true, sz:8, name:"Arial", color:{ rgb:"1E293B" } },
+        fill:{ patternType:"solid", fgColor:{ rgb:"CBD5E1" } },
+        border:{ top:medBorder(), bottom:medBorder(), left:medBorder(), right:thinBorder() },
+      };
+      const totNumStyle = (c) => {
+        const col = c===0?"94A3B8":c<4?"EF4444":c>8?"F59E0B":"059669";
+        return {
+          alignment:{ horizontal:"center", vertical:"center" },
+          font:{ bold:true, sz:8, name:"Arial", color:{ rgb:col } },
+          fill:{ patternType:"solid", fgColor:{ rgb:"CBD5E1" } },
+          border:{ top:medBorder(), bottom:medBorder(), left:thinBorder(), right:thinBorder() },
+        };
+      };
+
+      set(row, 0, "TOTAL DE ENFERMEROS", totLblStyle);
+      for (let c=1; c<NCOLS; c++) set(row, c, "", totLblStyle);
+      merges.push({ s:{r:row,c:0}, e:{r:row,c:NCOLS-1} });
+      dayInfo.forEach((d,i)=>{
+        const c = countPerTurn(schedule,employees,d.day)[turn]||0;
+        set(row, NCOLS+i, c>0?c:"", totNumStyle(c));
+      });
+      // vacíos en columnas resumen
+      for (let c=NCOLS+dayInfo.length; c<totalCols; c++) set(row, c, "", totLblStyle);
+      row++;
+    }
+
+    // ── LEYENDA ───────────────────────────────────────────────
+    row++; // espacio
+    const legendItems = [
+      { label:"M = Mañana (07-14)",  bg:"FFFFFF", fg:"1D4ED8" },
+      { label:"T = Tarde (14-21)",   bg:"FFFFFF", fg:"15803D" },
+      { label:"N = Noche (21-07)",   bg:"FFFFFF", fg:"000000" },
+      { label:"F = Franco",          bg:"FFFFFF", fg:"374151" },
+      { label:"F° = Franco Especial",bg:"FFFFFF", fg:"DC2626" },
+      { label:"Lic = Licencia",      bg:"FEF9C3", fg:"7C2D12" },
+      { label:"LAR = Largo",         bg:"FEF3C7", fg:"92400E" },
+      { label:"PM",                  bg:"DBEAFE", fg:"1E3A8A" },
+    ];
+    const lgStyle = (bgHex, fgHex) => ({
+      alignment:{ horizontal:"center", vertical:"center" },
+      font:{ bold:true, sz:7, name:"Arial", color:{ rgb:fgHex } },
+      fill:{ patternType:"solid", fgColor:{ rgb:bgHex } },
+      border: allBorders(() => thinBorder()),
+    });
+    legendItems.forEach((item, i) => {
+      const col = i * 5;
+      if (col + 4 < totalCols) {
+        set(row, col, item.label, lgStyle(item.bg, item.fg));
+        for (let c=col+1; c<col+5; c++) set(row, c, "", lgStyle(item.bg, item.fg));
+        merges.push({ s:{r:row,c:col}, e:{r:row,c:col+4} });
+      }
+    });
+    row++;
+
+    // ── NOTA AL PIE ──────────────────────────────────────────
+    const noteStyle = {
+      alignment:{ horizontal:"left", vertical:"center", wrapText:true },
+      font:{ bold:false, sz:7, name:"Arial", color:{ rgb:"64748B" }, italic:true },
+      fill:{ patternType:"solid", fgColor:{ rgb:"FFFFFF" } },
+      border: allBorders(() => thinBorder()),
+    };
+    set(row, 0, "NOTA: el cronograma sigue régimen mensual del servicio. En feriados el personal trabaja el turno asignado salvo indicación contraria.", noteStyle);
+    for (let c=1; c<totalCols; c++) set(row, c, "", noteStyle);
+    merges.push({ s:{r:row,c:0}, e:{r:row,c:totalCols-1} });
+    row++;
+
+    // ── ANCHO DE COLUMNAS Y ALTO DE FILAS ────────────────────
+    ws["!ref"]    = XLSX.utils.encode_range(range);
+    ws["!merges"] = merges;
+    ws["!cols"]   = [
+      { wch:26 }, { wch:7 }, { wch:4 },
+      ...dayInfo.map(()=>({ wch:3.2 })),
+      { wch:5 }, { wch:5 }, { wch:4 }, { wch:4 },
+    ];
+    ws["!rows"] = Array(row).fill(null).map((_, i) => {
+      if (i===0) return { hpt:20 };   // título
+      if (i===1) return { hpt:15 };   // info servicio
+      if (i===2) return { hpt:24 };   // encabezado días (wrap)
+      return { hpt:14 };
+    });
+
+    // Page setup para impresión desde Excel
+    ws["!pageSetup"] = { orientation:"landscape", fitToPage:true, fitToWidth:1, fitToHeight:0, paperSize:9 };
+    ws["!printOptions"] = { gridLines:false };
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, `${MONTHS[month]} ${year}`);
+    XLSX.writeFile(wb, `Diagrama_${MONTHS[month]}_${year}.xlsx`, { cellStyles:true, bookSST:false });
+  };
+
+  const exportPDF = () => {
+    // Inyectar estilos de impresión específicos del diagrama
+    const existingStyle = document.getElementById("print-override");
+    if (existingStyle) existingStyle.remove();
+    const style = document.createElement("style");
+    style.id = "print-override";
+    style.textContent = `
+      @media print {
+        @page { size: A3 landscape; margin: 8mm; }
+        body  { background:#fff !important; }
+        .no-print { display:none !important; }
+        #print-area {
+          display: block !important;
+          font-size: 7pt;
+          font-family: Arial, sans-serif;
+        }
+        #print-area table { border-collapse: collapse; width:100%; }
+        #print-area th, #print-area td {
+          border: 0.4pt solid #aaa;
+          padding: 1px 2px;
+          font-size: 6.5pt;
+        }
+        #print-area .cell-TM  { color:#1d4ed8!important; font-weight:bold; }
+        #print-area .cell-TT  { color:#15803d!important; font-weight:bold; }
+        #print-area .cell-TN  { color:#000!important;    font-weight:bold; }
+        #print-area .cell-F   { color:#374151!important; }
+        #print-area .cell-FE  { color:#dc2626!important; font-weight:bold; font-style:italic; }
+        #print-area .cell-LIC { background:#fef9c3!important; color:#7c2d12!important; font-weight:bold; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .cell-LAR { background:#fef3c7!important; color:#92400e!important; font-weight:bold; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .cell-PM  { background:#dbeafe!important; color:#1e3a8a!important; font-weight:bold; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .cell-EARLY { background:#fce7f3!important; color:#9d174d!important; font-weight:bold; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .cell-LATE  { background:#dcfce7!important; color:#166534!important; font-weight:bold; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .col-sat { background:#c7e3ff!important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .col-sun, #print-area .col-hol { background:#ffff00!important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .turn-hdr-TM { background:#eff6ff!important; color:#1d4ed8!important; font-weight:bold; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .turn-hdr-TT { background:#f0fdf4!important; color:#15803d!important; font-weight:bold; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .turn-hdr-TN { background:#f8fafc!important; color:#000!important;    font-weight:bold; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .total-row   { background:#cbd5e1!important; font-weight:bold; font-style:italic; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .hdr-row     { background:#1e3a8a!important; color:#fff!important; font-weight:bold; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .info-row    { background:#eff6ff!important; color:#1e40af!important; font-weight:bold; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+        #print-area .title-row   { text-align:center; font-size:11pt; font-weight:bold; color:#1e3a8a!important; letter-spacing:1px; }
+        * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }
+      }
+    `;
+    document.head.appendChild(style);
+    window.print();
+  };
+
+  const S = {
+    app:       { minHeight: "100vh", display: "flex", flexDirection: "column", background: "#fff", color: "#1e293b" },
+    hdr:       { background: "#1e40af", borderBottom: "2px solid #1e3a8a", padding: "14px 20px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" },
+    hdrTitle:  { fontFamily: "'Barlow Condensed',sans-serif", fontSize: 26, fontWeight: 900, color: "#fff", letterSpacing: 1, lineHeight: 1 },
+    hdrSub:    { fontSize: 11, color: "#bfdbfe", fontWeight: 600, marginTop: 2 },
+    monthNav:  { marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 },
+    navBtn:    { background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 14 },
+    monthLbl:  { fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 700, color: "#fff", minWidth: 200, textAlign: "center", letterSpacing: 1 },
+    tabs:      { display: "flex", gap: 1, padding: "10px 20px 0", background: "#fff", borderBottom: "2px solid #e2e8f0" },
+    content:   { flex: 1, padding: "14px 20px", background: "#fff" },
+    gridWrap:  { overflowX: "auto", border: "1px solid #000" },
+    thName:    { background: "#fff", color: "#1e293b", padding: "7px 10px", minWidth: 175, position: "sticky", left: 0, zIndex: 12, fontSize: 11, fontWeight: 700, textAlign: "left", whiteSpace: "nowrap", border: "1px solid #cbd5e1" },
+    thMeta:    { background: "#fff", color: "#374151", padding: "5px 6px", textAlign: "center", fontSize: 10, whiteSpace: "nowrap", minWidth: 52, border: "1px solid #cbd5e1" },
+    tdName:    { background: "#fff", color: "#1e293b", padding: "5px 10px", position: "sticky", left: 0, zIndex: 5, fontSize: 11, whiteSpace: "nowrap", border: "1px solid #e2e8f0" },
+    tdMeta:    { background: "#fff", padding: "4px 5px", textAlign: "center", fontSize: 11, fontWeight: 600, border: "1px solid #cbd5e1" },
+    cell:      { width: 30, height: 26, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 700, fontSize: 10, userSelect: "none" },
+    btn:       (bg, fg = "#fff") => ({ padding: "6px 14px", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, background: bg, color: fg, letterSpacing: ".5px" }),
+    formInput: { background: "#fff", border: "1px solid #cbd5e1", color: "#1e293b", padding: "5px 10px", borderRadius: 6, fontSize: 12, outline: "none" },
+    formSel:   { background: "#fff", border: "1px solid #cbd5e1", color: "#1e293b", padding: "5px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer" },
+    formLabel: { fontSize: 10, color: "#64748b", fontWeight: 700, letterSpacing: ".5px", marginBottom: 3, display: "block" },
+    cfgBox:    { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: 14, marginBottom: 12 },
+    cfgTitle:  { fontFamily: "'Barlow Condensed',sans-serif", fontSize: 15, fontWeight: 700, color: "#1e40af", marginBottom: 10, letterSpacing: 1 },
+  };
+
+  const TabBtn = ({ id, label }) => (
+    <div onClick={() => setTab(id)} style={{
+      padding: "8px 18px", borderRadius: "8px 8px 0 0", cursor: "pointer",
+      fontSize: 12, fontWeight: 700, letterSpacing: ".5px", userSelect: "none",
+      background: tab === id ? "#fff" : "transparent",
+      border: tab === id ? "1px solid #cbd5e1" : "1px solid transparent",
+      borderBottom: "none",
+      color: tab === id ? "#1e40af" : "#64748b",
+    }}>{label}</div>
+  );
+
+  // ── Colores para botones bulk ──
+  const BULK_OPTS = [
+    { type: "LIC", label: "Lic  — Licencia",        bg: "#fef9c3", fg: "#7c2d12", border: "#d97706" },
+    { type: "LAR", label: "LAR — Largo",             bg: "#fef3c7", fg: "#92400e", border: "#fbbf24" },
+    { type: "FE",  label: "F°  — Franco Especial",  bg: "#fff",    fg: "#dc2626", border: "#fca5a5" },
+  ];
+
+  return (
+    <div style={S.app}>
+
+      {/* ── MODAL: CONFIRMACIÓN DE HORAS MENSUALES ─────────────── */}
+      {!hoursReady && (
+        <div style={{
+          position:"fixed", inset:0, background:"rgba(15,23,42,0.75)",
+          zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center",
+          padding:16,
+        }}>
+          <div style={{
+            background:"#fff", borderRadius:12, padding:24, maxWidth:720, width:"100%",
+            maxHeight:"90vh", overflowY:"auto",
+            border:"3px solid #1e40af", boxShadow:"0 20px 60px rgba(0,0,0,0.4)",
+          }}>
+            <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:22, fontWeight:900, color:"#1e40af", marginBottom:4 }}>
+              📋 HORAS MENSUALES — {MONTHS[month].toUpperCase()} {year}
+            </div>
+            <div style={{ fontSize:12, color:"#64748b", marginBottom:16 }}>
+              Confirmá o ajustá las horas objetivo de cada empleado antes de armar el diagrama.
+              Los valores pre-cargados surgen del régimen y reducción asignados.
+            </div>
+
+            {["TM","TT","TN"].map(turn => {
+              const emps = employees.filter(e => e.turn === turn);
+              if (!emps.length) return null;
+              const turnLabel = turn === "TM" ? "Turno Mañana" : turn === "TT" ? "Turno Tarde" : "Turno Noche";
+              const turnColor = turn === "TM" ? "#1d4ed8" : turn === "TT" ? "#15803d" : "#111";
+              return (
+                <div key={turn} style={{ marginBottom:16 }}>
+                  <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight:900, fontSize:14, color:turnColor, borderBottom:`2px solid ${turnColor}`, paddingBottom:4, marginBottom:8 }}>
+                    {turn} — {turnLabel}
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(210px,1fr))", gap:6 }}>
+                    {emps.map(emp => {
+                      const base    = effectiveHours(emp);
+                      const current = hoursOverride[emp.id] ?? base;
+                      const isEdited = hoursOverride[emp.id] !== undefined && hoursOverride[emp.id] !== base;
+                      return (
+                        <div key={emp.id} style={{
+                          display:"flex", alignItems:"center", gap:8,
+                          background: isEdited ? "#fffbeb" : "#f8fafc",
+                          border: isEdited ? "1px solid #fbbf24" : "1px solid #e2e8f0",
+                          borderRadius:6, padding:"6px 10px",
+                        }}>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontSize:11, fontWeight:700, color:"#1e293b", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{emp.name}</div>
+                            <div style={{ fontSize:9, color:"#94a3b8" }}>{REGIMES[emp.regime]?.label}{emp.reduction > 0 ? ` · -${emp.reduction}%` : ""}</div>
+                          </div>
+                          <input
+                            type="number" min={0} max={300}
+                            value={current}
+                            onChange={e => setHoursOverride(prev => ({ ...prev, [emp.id]: +e.target.value }))}
+                            style={{
+                              width:54, textAlign:"center", fontSize:13, fontWeight:700,
+                              color: isEdited ? "#92400e" : "#059669",
+                              border: isEdited ? "2px solid #fbbf24" : "1px solid #cbd5e1",
+                              borderRadius:6, padding:"3px 4px", background:"#fff",
+                            }}
+                          />
+                          <span style={{ fontSize:10, color:"#94a3b8" }}>hs</span>
+                          {isEdited && (
+                            <button
+                              onClick={() => setHoursOverride(prev => { const n={...prev}; delete n[emp.id]; return n; })}
+                              style={{ background:"none", border:"none", cursor:"pointer", fontSize:14, color:"#94a3b8", padding:0 }}
+                              title="Restaurar valor por régimen"
+                            >↩</button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+
+            <div style={{ display:"flex", justifyContent:"flex-end", gap:10, marginTop:16, borderTop:"1px solid #e2e8f0", paddingTop:16 }}>
+              <button
+                onClick={() => { setHoursOverride({}); setHoursReady(true); }}
+                style={{ ...S.btn("#64748b"), fontSize:12 }}
+              >
+                Usar valores estándar
+              </button>
+              <button
+                onClick={() => setHoursReady(true)}
+                style={{ ...S.btn("#1e40af"), fontSize:13, padding:"8px 24px" }}
+              >
+                ✅ Confirmar horas y abrir diagrama
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* HEADER */}
+      <div style={S.hdr} className="no-print">
+        <div>
+          <div style={S.hdrTitle}>🏥 CRONOGRAMA MENSUAL DE TURNOS</div>
+          <div style={S.hdrSub}>{service} · {beds} CAMAS · TM 07-14 | TT 14-21 | TN 21-07 · Mín 4 / Máx 8 por guardia</div>
+        </div>
+        <div style={S.monthNav}>
+          <button style={S.navBtn} onClick={prevMonth}>◀</button>
+          <div style={S.monthLbl}>{MONTHS[month].toUpperCase()} {year}</div>
+          <button style={S.navBtn} onClick={nextMonth}>▶</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button style={S.btn("#059669")} onClick={exportExcel}>📊 Excel</button>
+          <button style={S.btn("#4f46e5")} onClick={exportPDF}>🖨️ PDF</button>
+          {currentUser && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 4, padding: "4px 12px", background: "rgba(255,255,255,.1)", borderRadius: 20, border: "1px solid rgba(255,255,255,.2)" }}>
+              <span style={{ fontSize: 11, color: "#bfdbfe", fontWeight: 600, fontFamily: "'Barlow',sans-serif" }}>👤 {currentUser.name}</span>
+              <button
+                onClick={onLogout}
+                style={{ background: "rgba(239,68,68,.2)", border: "1px solid rgba(239,68,68,.4)", color: "#fca5a5", padding: "3px 10px", borderRadius: 12, cursor: "pointer", fontSize: 10, fontWeight: 700, letterSpacing: 1 }}
+              >SALIR</button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* TABS */}
+      <div style={S.tabs} className="no-print">
+        <TabBtn id="schedule" label="📅 Diagrama" />
+        <TabBtn id="staff"    label="👤 Personal" />
+        <TabBtn id="config"   label="⚙️ Config" />
+      </div>
+
+      <div style={S.content}>
+
+        {tab === "schedule" && <>
+
+          {/* Leyenda */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, paddingBottom: 12 }} className="no-print">
+            {Object.entries(CELL_TYPES).filter(([k]) => k !== "---").map(([k, v]) => (
+              <div key={k} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "#475569" }}>
+                <div style={{ width: 24, height: 14, borderRadius: 3, background: v.bg, color: v.fg,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 9, fontWeight: 700,
+                  fontFamily: k === "FE" ? "'Georgia',serif" : "'Barlow Condensed',sans-serif",
+                  fontStyle: k === "FE" ? "italic" : "normal",
+                }}>{v.label}</div>
+                <span>
+                  {k === "TM" ? "Mañana 07-14" : k === "TT" ? "Tarde 14-21" : k === "TN" ? "Noche 21-07"
+                   : k === "F" ? "Franco" : k === "FE" ? "Franco Esp." : k === "LIC" ? "Licencia"
+                   : k === "LAR" ? "Largo" : k === "PM" ? "PM"
+                   : k === "EARLY" ? "Sale antes" : k === "LATE" ? "Sale después" : ""}
+                  {v.hours > 0 && <span style={{ color: "#94a3b8" }}> ({v.hours}hs)</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Alertas */}
+          {showAlerts && alerts.length > 0 && (
+            <div style={{ marginBottom: 10 }} className="no-print">
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b" }}>
+                  ⚠️ {alerts.filter(a => a.type === "danger").length} críticas
+                  · {alerts.filter(a => a.type === "warning").length} advertencias
+                  · {alerts.filter(a => a.type === "info").length} info
+                </span>
+                <button style={S.btn("#e2e8f0", "#475569")} onClick={() => setShowAlerts(false)}>Ocultar</button>
+              </div>
+              {alerts.slice(0, 10).map((a, i) => (
+                <div key={i} style={{ padding: "5px 12px", borderRadius: 5, fontSize: 11, marginBottom: 3,
+                  background: a.type === "danger" ? "#fef2f2" : a.type === "warning" ? "#fffbeb" : "#eff6ff",
+                  borderLeft: `3px solid ${a.type === "danger" ? "#ef4444" : a.type === "warning" ? "#f97316" : "#3b82f6"}`,
+                  color: a.type === "danger" ? "#991b1b" : a.type === "warning" ? "#92400e" : "#1e40af",
+                }}>
+                  {a.type === "danger" ? "🔴" : a.type === "warning" ? "🟠" : "🔵"} {a.msg}
+                </div>
+              ))}
+              {alerts.length > 10 && <div style={{ fontSize: 10, color: "#475569", padding: "3px 12px" }}>...y {alerts.length - 10} más</div>}
+            </div>
+          )}
+          {!showAlerts && (
+            <button style={{ ...S.btn("#e2e8f0", "#475569"), marginBottom: 10, fontSize: 10 }}
+              className="no-print" onClick={() => setShowAlerts(true)}>
+              Mostrar alertas 🔴{alerts.filter(a => a.type === "danger").length} 🟠{alerts.filter(a => a.type === "warning").length}
+            </button>
+          )}
+
+          {/* Toolbar */}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }} className="no-print">
+            {[["ALL","Todos","#cbd5e1"],["TM","Mañana","#1d4ed8"],["TT","Tarde","#92400e"],["TN","Noche","#3b0764"]].map(([k, l, c]) => (
+              <button key={k} onClick={() => setFilterTurn(k)} style={{
+                padding: "5px 14px", borderRadius: 20, border: "1px solid #cbd5e1",
+                background: filterTurn === k ? c : "#fff",
+                color: filterTurn === k ? "#fff" : "#475569",
+                fontSize: 11, fontWeight: 700, cursor: "pointer", letterSpacing: ".5px",
+              }}>{l}</button>
+            ))}
+            <div style={{ flex: 1 }} />
+            <button style={S.btn("#f59e0b", "#000")} onClick={doAutoFill}>⚡ Auto-completar</button>
+            <button style={S.btn("#e2e8f0", "#475569")} onClick={clearAll}>🗑️ Limpiar todo</button>
+            <button style={{ ...S.btn("#e0f2fe","#0369a1"), fontSize:11 }} onClick={() => setHoursReady(false)}>⏱ Horas mensuales</button>
+          </div>
+
+          {/* ── BARRA DE SELECCIÓN MÚLTIPLE ── */}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap", padding: "8px 12px", background: bulkMode ? "#f8fafc" : "#fff", border: "1px solid #e2e8f0", borderRadius: 8 }} className="no-print">
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#475569", marginRight: 4 }}>
+              Marcar múltiples días:
+            </span>
+            {BULK_OPTS.map(opt => (
+              <button key={opt.type} onClick={() => { setBulkMode(bulkMode === opt.type ? null : opt.type); setBulkSelected(new Set()); }}
+                style={{ padding: "5px 14px", borderRadius: 6, border: `2px solid ${opt.border}`,
+                  background: bulkMode === opt.type ? opt.fg : opt.bg,
+                  color: bulkMode === opt.type ? "#fff" : opt.fg,
+                  fontSize: 11, fontWeight: 800, cursor: "pointer", letterSpacing: ".5px",
+                  fontFamily: opt.type === "FE" ? "'Georgia',serif" : "'Barlow Condensed',sans-serif",
+                  fontStyle: opt.type === "FE" ? "italic" : "normal",
+                  transition: "all .15s",
+                }}>
+                {opt.label}
+              </button>
+            ))}
+            {bulkMode && (
+              <>
+                <span style={{ fontSize: 10, color: "#64748b", fontStyle: "italic" }}>
+                  ✅ {bulkSelected.size} celda{bulkSelected.size !== 1 ? "s" : ""} seleccionada{bulkSelected.size !== 1 ? "s" : ""}
+                  {" "}— hacé clic en las celdas del diagrama
+                </span>
+                <button style={{ ...S.btn("#059669"), fontSize: 11 }} onClick={applyBulk} disabled={bulkSelected.size === 0}>
+                  ✔ Aplicar {CELL_TYPES[bulkMode]?.label}
+                </button>
+                <button style={{ ...S.btn("#e2e8f0", "#475569"), fontSize: 11 }} onClick={cancelBulk}>
+                  ✕ Cancelar
+                </button>
+              </>
+            )}
+            {!bulkMode && (
+              <span style={{ fontSize: 10, color: "#94a3b8", fontStyle: "italic" }}>
+                · Botón derecho sobre celda para cambiar turno individual
+              </span>
+            )}
+          </div>
+
+          {/* ── PANEL JEFE/A DE SERVICIO ── */}
+          <div style={{ display:"flex", gap:12, alignItems:"stretch", marginBottom:10, flexWrap:"wrap" }} className="no-print">
+            <div style={{ border:"2px solid #1e40af", borderRadius:8, padding:"8px 14px", background:"#eff6ff", minWidth:260, display:"flex", flexDirection:"column", gap:6 }}>
+              <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontSize:13, fontWeight:900, color:"#1e40af", letterSpacing:1 }}>
+                👑 JEFE/A DE SERVICIO
+              </div>
+              {jefeId ? (() => {
+                const jefe = employees.find(e => e.id === jefeId);
+                return jefe ? (
+                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontWeight:700, fontSize:12, color:"#1e293b" }}>{jefe.name}</div>
+                      <div style={{ fontSize:10, color:"#64748b" }}>
+                        {REGIMES[jefe.regime]?.label}
+                        {jefe.reduction > 0 ? ` · Reducción ${jefe.reduction}%` : ""}
+                        {jefe.regime === "H24" ? " · 24hs" : ""}
+                        {" · "}{jefe.turn}
+                      </div>
+                    </div>
+                    <button onClick={() => setJefeId(null)} style={{ background:"none", border:"1px solid #93c5fd", borderRadius:4, color:"#1d4ed8", cursor:"pointer", fontSize:10, padding:"2px 8px" }}>Cambiar</button>
+                  </div>
+                ) : null;
+              })() : (
+                <select style={{ ...S.formSel, fontSize:11 }} value="" onChange={e => setJefeId(+e.target.value)}>
+                  <option value="">— Seleccionar —</option>
+                  {employees.map(e => <option key={e.id} value={e.id}>{e.name} ({e.turn}{e.reduction > 0 ? ` -${e.reduction}%` : ""}{e.regime==="H24" ? " 24hs":""}) </option>)}
+                </select>
+              )}
+            </div>
+          </div>
+
+          {/* GRILLA */}
+          <div style={S.gridWrap}>
+            <table style={{ minWidth: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={S.thName}>APELLIDO Y NOMBRE</th>
+                  <th style={S.thMeta}>Rég.</th>
+                  <th style={S.thMeta}>T.</th>
+                  {dayInfo.map(d => {
+                    const isYellow = d.isSunday || d.isHoliday;
+                    return (
+                    <th key={d.day} style={{
+                      ...S.thMeta,
+                      background: isYellow ? "#ffff00" : "#fff",
+                      color: d.isHoliday ? "#dc2626" : d.isSunday ? "#1d4ed8" : "#374151",
+                      minWidth: 30, maxWidth: 34, padding: "4px 2px", fontSize: 9,
+                      border: d.isWeekend ? "2px solid #000" : "1px solid #cbd5e1",
+                      fontWeight: 900,
+                    }}>
+                      <div style={{ fontSize: 8 }}>{WDAYS[d.dow]}</div>
+                      <div style={{ fontSize: 11, fontWeight: 900 }}>{d.day}</div>
+                      {d.isHoliday && <div style={{ fontSize: 7, color: "#dc2626", fontWeight:700 }}>FER</div>}
+                    </th>
+                    );
+                  })}
+                  <th style={{ ...S.thMeta, background:"#f1f5f9", minWidth:36, fontSize:9, fontWeight:900, borderLeft:"2px solid #000" }}>Obj.</th>
+                  <th style={{ ...S.thMeta, background:"#f1f5f9", minWidth:36, fontSize:9, fontWeight:900 }}>Carg.</th>
+                  <th style={{ ...S.thMeta, background:"#fff7ed", minWidth:30, fontSize:9, fontWeight:900, color:"#92400e" }}>Sáb</th>
+                  <th style={{ ...S.thMeta, background:"#ffff00", minWidth:30, fontSize:9, fontWeight:900, color:"#1d4ed8" }}>Dom</th>
+                </tr>
+              </thead>
+              <tbody>
+                {["TM", "TT", "TN"].map(turn => {
+                  const emps = visibleEmps.filter(e => e.turn === turn);
+                  if (!emps.length) return null;
+                  const turnLabel = turn === "TM" ? "TURNO MAÑANA (07:00–14:00)"
+                                  : turn === "TT" ? "TURNO TARDE (14:00–21:00)"
+                                  : "TURNO NOCHE (21:00–07:00)";
+                  const turnColor = turn === "TM" ? "#1d4ed8" : turn === "TT" ? "#15803d" : "#111";
+
+                  return [
+                    <tr key={`sep-${turn}`}>
+                      <td colSpan={3 + dayInfo.length + 4} style={{
+                        background: "#fff", color: turnColor, padding: "5px 10px",
+                        position: "sticky", left: 0, zIndex: 5,
+                        fontSize: 11, fontWeight: 900, letterSpacing: 1, textTransform: "uppercase",
+                        borderTop: "2px solid #000", borderBottom: "1px solid #cbd5e1",
+                        borderLeft: "2px solid #000", borderRight: "2px solid #000",
+                      }}>
+                        ▶ {turnLabel}
+                      </td>
+                    </tr>,
+
+                    ...emps.flatMap((emp, empIdx) => {
+                      const target  = targetHours(emp);
+                      const worked  = workedHours(schedule, emp.id, daysInMonth);
+                      const diff    = worked - target;
+                      const mc      = Math.abs(diff) <= 7 ? "#059669" : diff > 0 ? "#f59e0b" : "#ef4444";
+
+                      // ── Divisor visual a mitad del turno noche ──
+                      const midpoint  = Math.ceil(emps.length / 2);
+                      const dividerRow = turn === "TN" && empIdx === midpoint ? (
+                        <tr key={`tn-div`}>
+                          <td colSpan={5} style={{
+                            background: "#e2e8f0", padding: "1px 10px",
+                            position: "sticky", left: 0, zIndex: 5,
+                            fontSize: 9, fontWeight: 700, color: "#475569",
+                            letterSpacing: 2, textTransform: "uppercase",
+                            borderTop: "2px dashed #94a3b8", borderBottom: "2px dashed #94a3b8",
+                            borderLeft: "2px solid #000", borderRight: "1px solid #cbd5e1",
+                          }}>· · · GRUPO 2 · · ·</td>
+                          {dayInfo.map(d => (
+                            <td key={d.day} style={{
+                              background: (d.isSunday || d.isHoliday) ? "#e6e600" : "#e2e8f0",
+                              borderTop: "2px dashed #94a3b8", borderBottom: "2px dashed #94a3b8",
+                              borderLeft: "1px solid #cbd5e1", borderRight: "1px solid #cbd5e1",
+                              padding: 0,
+                            }} />
+                          ))}
+                        </tr>
+                      ) : null;
+
+                      const isJefe     = emp.id === jefeId;
+                      const isDragOver = dragOverId === emp.id && dragEmpId !== emp.id;
+
+                      const empRow = (
+                        <tr key={emp.id}
+                          draggable
+                          onDragStart={() => handleDragStart(emp.id)}
+                          onDragOver={e  => handleDragOver(e, emp.id)}
+                          onDrop={()     => handleDrop(emp.id)}
+                          onDragEnd={handleDragEnd}
+                          style={{ opacity: dragEmpId === emp.id ? 0.4 : 1, outline: isDragOver ? "2px solid #1d4ed8" : "none", cursor: "grab" }}
+                        >
+                          <td style={{ ...S.tdName, background: isJefe ? "#eff6ff" : "#fff", borderLeft: isJefe ? "3px solid #1e40af" : undefined }}>
+                            <div style={{ fontWeight: 700, display:"flex", alignItems:"center", gap:4 }}>
+                              <span style={{ fontSize:9, color:"#94a3b8", cursor:"grab", marginRight:2 }}>⠿</span>
+                              {isJefe && <span style={{ fontSize:9, background:"#1e40af", color:"#fff", borderRadius:3, padding:"1px 4px", fontWeight:900 }}>JEFA</span>}
+                              {emp.name}
+                            </div>
+                            <div style={{ fontSize: 9, color: "#94a3b8" }}>
+                              {REGIMES[emp.regime]?.label}
+                              {emp.reduction > 0 ? ` · -${emp.reduction}%` : ""}
+                              {emp.note ? ` · ${emp.note}` : ""}
+                            </div>
+                          </td>
+                          <td style={{ ...S.tdMeta, color: "#475569" }}>{emp.regime}</td>
+                          <td style={{ ...S.tdMeta, color: turnColor, fontWeight: 900 }}>{emp.turn}</td>
+
+                          {dayInfo.map(d => {
+                            const k  = `${emp.id}-${d.day}`;
+                            const ct = schedule[k];
+
+                            // ── Par sáb+dom franco ──
+                            const isFrancoWeekendPair = calcFrancoWeekendPair(emp.id, d, schedule, dayInfo);
+
+                            const cs = getCellStyle(ct || '', isFrancoWeekendPair);
+
+                            // Amarillo flúor en domingos/feriados (salvo celdas con color propio)
+                            const isYellowCol = d.isSunday || d.isHoliday;
+                            const hasOwnBg    = ["LIC","EARLY","LATE","LAR","PM"].includes(ct);
+                            const yellowBg    = isYellowCol && !hasOwnBg ? "#ffff00" : cs.bg;
+                            // En modo bulk: resaltar seleccionadas
+                            const isSelected = bulkMode && bulkSelected.has(k);
+                            const cellBg     = isSelected ? "#bfdbfe" : yellowBg;
+                            const cellBorder = isSelected ? "2px solid #1d4ed8" : cs.border;
+
+                            return (
+                              <td key={d.day} style={{ background: cellBg, border: cellBorder, padding: 0 }}>
+                                <CellContextMenu empId={emp.id} day={d.day} current={ct} onSelect={type => setCellValue(emp.id, d.day, type)}>
+                                  <div
+                                    style={{
+                                      ...S.cell,
+                                      background: cellBg,
+                                      color: isSelected ? "#1d4ed8" : cs.textColor,
+                                      fontWeight: cs.bold ? 900 : 400,
+                                      cursor: bulkMode ? "cell" : "default",
+                                      // F° con fuente especial
+                                      fontFamily: ct === "FE" ? "'Georgia',serif" : "'Barlow Condensed',sans-serif",
+                                      fontStyle: ct === "FE" ? "italic" : "normal",
+                                    }}
+                                    onClick={() => handleCellClick(emp.id, d.day)}
+                                    title={
+                                      bulkMode ? `Clic para ${bulkSelected.has(k) ? "deseleccionar" : "seleccionar"}`
+                                      : ct === "EARLY" ? "Sale antes"
+                                      : ct === "LATE"  ? "Sale después"
+                                      : ct === "FE"    ? "Franco Especial"
+                                      : ""
+                                    }
+                                  >
+                                    {cs.label}
+                                  </div>
+                                </CellContextMenu>
+                              </td>
+                            );
+                          })}
+                          {/* ── Columnas resumen al final ── */}
+                          <td style={{ ...S.tdMeta, color: "#475569", borderLeft:"2px solid #000", background:"#f1f5f9" }}>{target}hs</td>
+                          <td style={{ ...S.tdMeta, color: mc, fontWeight: 700, background:"#f1f5f9" }}>{worked}hs</td>
+                          <td style={{ ...S.tdMeta, color: "#92400e", fontWeight:700, background:"#fff7ed" }}>
+                            {dayInfo.filter(d => d.isSat && isWorkShift(schedule[`${emp.id}-${d.day}`])).length}
+                          </td>
+                          <td style={{ ...S.tdMeta, color: "#1d4ed8", fontWeight:700, background:"#ffff00" }}>
+                            {dayInfo.filter(d => d.isSunday && isWorkShift(schedule[`${emp.id}-${d.day}`])).length}
+                          </td>
+                        </tr>
+                      );
+                      return [dividerRow, empRow].filter(Boolean);
+                    }),
+
+                    <tr key={`total-${turn}`}>
+                      <td colSpan={3} style={{
+                        background: "#cbd5e1", color: "#1e293b", padding: "3px 10px",
+                        position: "sticky", left: 0, zIndex: 5,
+                        fontSize: 10, fontWeight: 900,
+                        borderTop: "1px solid #000", borderBottom: "2px solid #000",
+                        borderLeft: "2px solid #000", borderRight: "1px solid #94a3b8",
+                        fontStyle: "italic", letterSpacing: 0.5,
+                      }}>
+                        TOTAL DE ENFERMEROS
+                      </td>
+                      {dayInfo.map(d => {
+                        const c       = countPerTurn(schedule, employees, d.day)[turn];
+                        const col     = c === 0 ? "#64748b" : c < 4 ? "#ef4444" : c > 8 ? "#f59e0b" : "#059669";
+                        return (
+                          <td key={d.day} style={{
+                            textAlign: "center", fontSize: 11, fontWeight: 900, color: col, background: "#cbd5e1",
+                            borderTop: "1px solid #000", borderBottom: "2px solid #000",
+                            borderLeft: "1px solid #94a3b8", borderRight: "1px solid #94a3b8", padding: "2px 0",
+                          }}>
+                            {c > 0 ? c : ""}
+                          </td>
+                        );
+                      })}
+                      <td colSpan={4} style={{ background:"#cbd5e1", borderTop:"1px solid #000", borderBottom:"2px solid #000", borderLeft:"2px solid #000" }} />
+                    </tr>,
+                  ];
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>}
+
+        {/* PERSONAL */}
+        {tab === "staff" && <>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", padding: 12, background: "#fff", borderRadius: 8, marginBottom: 12 }}>
+            {[
+              ["NOMBRE",     <input key="n" style={{ ...S.formInput, width: 200 }} placeholder="Apellido, Nombre" value={newEmp.name} onChange={e => setNewEmp(p => ({ ...p, name: e.target.value }))} />],
+              ["RÉGIMEN",    <select key="r" style={S.formSel} value={newEmp.regime} onChange={e => setNewEmp(p => ({ ...p, regime: e.target.value }))}>{Object.entries(REGIMES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select>],
+              ["TURNO",      <select key="t" style={S.formSel} value={newEmp.turn} onChange={e => setNewEmp(p => ({ ...p, turn: e.target.value }))}><option value="TM">TM — Mañana</option><option value="TT">TT — Tarde</option><option value="TN">TN — Noche</option></select>],
+              ["REDUCCIÓN %",<input key="rd" style={{ ...S.formInput, width: 70 }} type="number" min={0} max={50} value={newEmp.reduction} onChange={e => setNewEmp(p => ({ ...p, reduction: +e.target.value }))} />],
+              ["NOTA",       <input key="nt" style={{ ...S.formInput, width: 120 }} placeholder="Prest./Ingr./..." value={newEmp.note} onChange={e => setNewEmp(p => ({ ...p, note: e.target.value }))} />],
+            ].map(([lbl, ctrl]) => (
+              <div key={lbl} style={{ display: "flex", flexDirection: "column" }}>
+                <span style={S.formLabel}>{lbl}</span>{ctrl}
+              </div>
+            ))}
+            <button style={S.btn("#059669")} onClick={() => {
+              if (!newEmp.name.trim()) return;
+              setEmployees(prev => [...prev, { ...newEmp, id: Date.now() }]);
+              setNewEmp({ name: "", regime: "R15", turn: "TM", reduction: 0, note: "" });
+            }}>+ Agregar</button>
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                {["#","Nombre","Régimen","Turno","Hs Objetivo","Reducción","Nota","Acciones"].map(h => (
+                  <th key={h} style={{ background: "#fff", color: "#1e293b", padding: "8px 12px", textAlign: "left", fontSize: 11, fontWeight: 700, border: "1px solid #cbd5e1", borderBottom: "2px solid #000" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {employees.map((emp, i) => {
+                const isEdit = editEmpId === emp.id;
+                const tc = emp.turn === "TM" ? "#60a5fa" : emp.turn === "TT" ? "#fbbf24" : "#a78bfa";
+                const td = { border: "1px solid #e2e8f0", padding: "7px 12px", fontSize: 12, color: "#cbd5e1", background: "#fff" };
+                return (
+                  <tr key={emp.id}>
+                    <td style={{ ...td, color: "#94a3b8", width: 30 }}>{i + 1}</td>
+                    <td style={td}>{isEdit ? <input style={{ ...S.formInput, width: 180 }} value={editData.name} onChange={e => setEditData(p => ({ ...p, name: e.target.value }))} /> : emp.name}</td>
+                    <td style={td}>{isEdit ? <select style={S.formSel} value={editData.regime} onChange={e => setEditData(p => ({ ...p, regime: e.target.value }))}>{Object.entries(REGIMES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select> : <span style={{ background: "#e0e7ff", padding: "2px 7px", borderRadius: 4, fontSize: 10, color:"#1e40af" }}>{REGIMES[emp.regime]?.label}</span>}</td>
+                    <td style={td}>{isEdit ? <select style={S.formSel} value={editData.turn} onChange={e => setEditData(p => ({ ...p, turn: e.target.value }))}><option value="TM">TM</option><option value="TT">TT</option><option value="TN">TN</option></select> : <span style={{ color: tc, fontWeight: 700 }}>{emp.turn}</span>}</td>
+                    <td style={{ ...td, color: "#059669", fontWeight: 700 }}>{targetHours(emp)}hs</td>
+                    <td style={td}>{isEdit ? <input style={{ ...S.formInput, width: 60 }} type="number" min={0} max={50} value={editData.reduction} onChange={e => setEditData(p => ({ ...p, reduction: +e.target.value }))} /> : emp.reduction > 0 ? <span style={{ color: "#fb923c", fontWeight: 700 }}>-{emp.reduction}%</span> : <span style={{ color: "#94a3b8" }}>—</span>}</td>
+                    <td style={{ ...td, fontSize: 10, color: "#475569" }}>{isEdit ? <input style={{ ...S.formInput, width: 100 }} value={editData.note} onChange={e => setEditData(p => ({ ...p, note: e.target.value }))} /> : emp.note || "—"}</td>
+                    <td style={{ ...td, display: "flex", gap: 4 }}>
+                      {isEdit
+                        ? <><button style={S.btn("#059669")} onClick={() => { setEmployees(prev => prev.map(e => e.id === emp.id ? { ...e, ...editData } : e)); setEditEmpId(null); }}>✓</button><button style={S.btn("#e2e8f0", "#475569")} onClick={() => setEditEmpId(null)}>✕</button></>
+                        : <><button style={S.btn("#f59e0b", "#000")} onClick={() => { setEditEmpId(emp.id); setEditData({ ...emp }); }}>✏️</button><button style={S.btn("#dc2626")} onClick={() => { if (window.confirm(`¿Eliminar a ${emp.name}?`)) setEmployees(prev => prev.filter(e => e.id !== emp.id)); }}>🗑</button></>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>}
+
+        {/* CONFIG */}
+        {tab === "config" && <>
+          <div style={S.cfgBox}>
+            <div style={S.cfgTitle}>📋 DATOS DEL SERVICIO</div>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              {[
+                ["SERVICIO", <input key="sv" style={{ ...S.formInput, width: 160 }} value={service} onChange={e => setService(e.target.value)} />],
+                ["Nº CAMAS", <input key="bd" style={{ ...S.formInput, width: 80 }} type="number" value={beds} onChange={e => setBeds(+e.target.value)} />],
+                ["AÑO",      <input key="yr" style={{ ...S.formInput, width: 90 }} type="number" value={year} onChange={e => setYear(+e.target.value)} />],
+              ].map(([l, c]) => (
+                <div key={l} style={{ display: "flex", flexDirection: "column" }}>
+                  <span style={S.formLabel}>{l}</span>{c}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={S.cfgBox}>
+            <div style={S.cfgTitle}>🔴 FERIADOS — {MONTHS[month].toUpperCase()} {year}</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <span style={S.formLabel}>DÍA DEL MES</span>
+                <input style={{ ...S.formInput, width: 80 }} type="number" min={1} max={daysInMonth} value={newHoliday} onChange={e => setNewHoliday(e.target.value)} />
+              </div>
+              <button style={S.btn("#dc2626")} onClick={() => {
+                const d = parseInt(newHoliday);
+                if (d >= 1 && d <= daysInMonth && !holidays.includes(d)) { setHolidays(prev => [...prev, d].sort((a, b) => a - b)); setNewHoliday(""); }
+              }}>+ Agregar feriado</button>
+            </div>
+            <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {holidays.length === 0
+                ? <span style={{ fontSize: 11, color: "#94a3b8" }}>Sin feriados cargados este mes</span>
+                : holidays.map(d => (
+                  <span key={d} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 20, fontSize: 11, color: "#991b1b" }}>
+                    Día {d} — {WDAYS[getDow(year, month, d)]}
+                    <button onClick={() => setHolidays(prev => prev.filter(x => x !== d))} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 13 }}>×</button>
+                  </span>
+                ))}
+            </div>
+          </div>
+
+          <div style={S.cfgBox}>
+            <div style={S.cfgTitle}>📊 REGÍMENES VIGENTES</div>
+            {[
+              { reg: "Régimen 15",   hs: 160, tm: "L–V 7hs · Sáb 5hs",  note: "40hs/sem. Guardias 7hs TM/TT, 10hs TN." },
+              { reg: "Régimen 27",   hs: 144, tm: "L–V 6hs · Sáb 6hs",  note: "36hs/sem. Guardias 7hs TM/TT, 10hs TN." },
+              { reg: "24hs Semanal", hs: 88,  tm: "4hs/día L–Sáb",       note: "24hs/semana. Rellena guardias faltantes." },
+            ].map(r => (
+              <div key={r.reg} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "8px 0", borderBottom: "1px solid #e2e8f0", flexWrap: "wrap" }}>
+                <div style={{ width: 120, fontWeight: 700, fontSize: 12, color: "#1e293b" }}>{r.reg}</div>
+                <div style={{ width: 50, fontWeight: 700, color: "#34d399" }}>{r.hs}hs</div>
+                <div style={{ width: 140, fontSize: 11, color: "#64748b" }}>{r.tm}</div>
+                <div style={{ flex: 1, fontSize: 10, color: "#94a3b8" }}>{r.note}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={S.cfgBox}>
+            <div style={S.cfgTitle}>⚖️ BALANCE DE HORAS POR TURNO — {MONTHS[month].toUpperCase()} {year}</div>
+            <div style={{ fontSize:11, color:"#64748b", marginBottom:10 }}>
+              Si el total de horas del turno supera el objetivo mensual del grupo, hay que mover algún día a personal de otro turno sin restricción. Los números en rojo indican exceso.
+            </div>
+            {["TM","TT","TN"].map(turn => {
+              const emps       = employees.filter(e => e.turn === turn);
+              const totalObj   = emps.reduce((s, e) => s + targetHours(e), 0);
+              const totalCarg  = emps.reduce((s, e) => s + workedHours(schedule, e.id, daysInMonth), 0);
+              const diff       = totalCarg - totalObj;
+              const turnColor  = turn === "TM" ? "#1d4ed8" : turn === "TT" ? "#15803d" : "#111";
+              const diffColor  = diff === 0 ? "#059669" : diff > 0 ? "#dc2626" : "#f59e0b";
+              const turnLabel  = turn === "TM" ? "Mañana" : turn === "TT" ? "Tarde" : "Noche";
+              return (
+                <div key={turn} style={{ borderBottom:"1px solid #e2e8f0", padding:"10px 0" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:16, flexWrap:"wrap", marginBottom:6 }}>
+                    <span style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight:900, fontSize:14, color:turnColor, minWidth:70 }}>{turn} — {turnLabel}</span>
+                    <span style={{ fontSize:11, color:"#475569" }}>Objetivo grupo: <b>{totalObj}hs</b></span>
+                    <span style={{ fontSize:11, color:"#475569" }}>Cargadas: <b style={{ color: diffColor }}>{totalCarg}hs</b></span>
+                    <span style={{ fontSize:11, fontWeight:700, color: diffColor }}>
+                      {diff === 0 ? "✅ Exacto" : diff > 0 ? `🔴 +${diff}hs de exceso` : `🟡 ${diff}hs faltantes`}
+                    </span>
+                  </div>
+                  {diff > 0 && (
+                    <div style={{ fontSize:10, color:"#475569", marginBottom:4 }}>
+                      <b>Candidatos para absorber días sobrantes (sin restricción, de otro turno):</b>
+                    </div>
+                  )}
+                  {diff > 0 && (
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+                      {employees
+                        .filter(e => e.turn !== turn && canCoverOtherTurn(e))
+                        .map(e => {
+                          const w = workedHours(schedule, e.id, daysInMonth);
+                          const t = targetHours(e);
+                          const libre = t - w;
+                          if (libre < 7) return null;
+                          return (
+                            <span key={e.id} style={{ fontSize:10, background:"#eff6ff", border:"1px solid #93c5fd", borderRadius:12, padding:"2px 10px", color:"#1e40af", fontWeight:700 }}>
+                              {e.name} ({e.turn}) · {Math.floor(libre/7)} guardias libres
+                            </span>
+                          );
+                        })}
+                    </div>
+                  )}
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:4, marginTop:6 }}>
+                    {emps.map(e => {
+                      const w = workedHours(schedule, e.id, daysInMonth);
+                      const t = targetHours(e);
+                      const d = w - t;
+                      const c = d === 0 ? "#059669" : d > 0 ? "#dc2626" : "#f59e0b";
+                      return (
+                        <span key={e.id} style={{ fontSize:10, background:"#f8fafc", border:`1px solid ${c}`, borderRadius:8, padding:"2px 8px", color:c, fontWeight:600 }}>
+                          {e.name.split(" ")[0]}: {w}/{t}hs {d > 0 ? `(+${d})` : d < 0 ? `(${d})` : "✓"}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={S.cfgBox}>
+            <div style={S.cfgTitle}>📏 REGLAS</div>
+            {[
+              "Franco mínimo: 1 fin de semana completo (sáb + dom) libre + 1 domingo adicional",
+              "Domingo día 1 del mes: el par sáb+dom no se marca hasta conocer el diagrama del mes anterior",
+              "FE = F° (Franco Especial) — se carga manualmente antes del auto-completar",
+              "Personal por guardia: mínimo 4 · máximo 8 enfermeros",
+              "TM y TT: máximo 4 guardias consecutivas · TN: máximo 2 guardias consecutivas",
+              "Click derecho → menú individual · Botones Lic/LAR/F° → selección múltiple",
+            ].map((t, i) => (
+              <div key={i} style={{ fontSize: 12, color: "#475569", padding: "5px 0", borderBottom: "1px solid #e2e8f0", display: "flex", gap: 8 }}>
+                <span style={{ color: "#1e40af", fontWeight: 700 }}>•</span> {t}
+              </div>
+            ))}
+          </div>
+        </>}
+
+      </div>
+    </div>
+  );
+}
