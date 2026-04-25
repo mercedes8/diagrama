@@ -3,5 +3,5 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: './',   // ← necesario para que Electron encuentre los assets
+  base: './',
 })

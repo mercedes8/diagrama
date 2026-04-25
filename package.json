@@ -2,7 +2,7 @@
   "name": "cronograma-francos",
   "version": "1.0.0",
   "description": "Cronograma Mensual de Turnos Hospitalarios",
-  "main": "main.js",
+  "main": "src/electron.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -18,7 +18,7 @@
       "output": "release"
     },
     "files": [
-      "main.js",
+      "src/electron.js",
       "dist/**/*",
       "package.json"
     ],
