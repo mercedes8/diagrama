@@ -1,5 +1,5 @@
-import { MONTHS } from "../constants";
-import { S } from "../styles";
+import { MONTHS } from "../../constants";
+import { S } from "../../styles";
 
 export default function AppHeader({
   service,

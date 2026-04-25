@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { CELL_TYPES, TURN_LABEL } from "../constants";
+import { CELL_TYPES, TURN_LABEL } from "../../constants";
 
 export default function CellContextMenu({
   empId,

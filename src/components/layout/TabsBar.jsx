@@ -1,4 +1,4 @@
-import { S } from "../styles";
+import { S } from "../../styles";
 
 export default function TabsBar({ tab, setTab }) {
   const TabBtn = ({ id, label }) => (

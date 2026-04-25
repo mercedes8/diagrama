@@ -1,5 +1,5 @@
-import { CELL_TYPES } from "../constants";
-import { S } from "../styles";
+import { CELL_TYPES } from "../../constants";
+import { S } from "../../styles";
 
 const BULK_OPTS = [
   {

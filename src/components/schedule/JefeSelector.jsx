@@ -1,5 +1,5 @@
-import { REGIMES } from "../constants";
-import { S } from "../styles";
+import { REGIMES } from "../../constants";
+import { S } from "../../styles";
 
 export default function JefeSelector({ jefeId, setJefeId, employees }) {
   return (

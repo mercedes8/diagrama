@@ -1,7 +1,7 @@
-import { MONTHS, REGIMES } from "../constants";
-import { effectiveHours } from "../utils/scheduleUtils";
-import { calcWorkingDays, getDaysInMonth } from "../utils/dateUtils";
-import { S } from "../styles";
+import { MONTHS, REGIMES } from "../../constants";
+import { effectiveHours } from "../../utils/scheduleUtils";
+import { calcWorkingDays, getDaysInMonth } from "../../utils/dateUtils";
+import { S } from "../../styles";
 
 export default function HoursModal({
   month,
