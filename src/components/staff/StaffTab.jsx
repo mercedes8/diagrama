@@ -110,7 +110,7 @@ export default function StaffTab({
             setEmployees((prev) => [...prev, { ...newEmp, id: Date.now() }]);
             setNewEmp({
               name: "",
-              regime: "R15",
+              regime: "Reg15",
               turn: "TM",
               reduction: 0,
               note: "",

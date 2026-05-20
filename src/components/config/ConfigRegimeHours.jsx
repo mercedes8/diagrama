@@ -13,25 +13,25 @@ export default function ConfigRegimeHours({ regimeHours, setRegimeHours }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {[
           {
-            key: "R15",
-            label: "Régimen 15",
+            key: "Reg15",
+            label: "Reg15 – Enf. Profesional",
             color: "#1e40af",
             bg: "#eff6ff",
-            note: "Corresponde aprox. a 40hs/semana",
+            note: "146hs/mes base",
           },
           {
-            key: "R27",
-            label: "Régimen 27",
+            key: "Reg27",
+            label: "Reg27 – Licenciado",
             color: "#15803d",
             bg: "#f0fdf4",
-            note: "Corresponde aprox. a 36hs/semana",
+            note: "132hs/mes base",
           },
           {
             key: "H24",
             label: "24hs Semanal",
             color: "#92400e",
             bg: "#fffbeb",
-            note: "Corresponde aprox. a 24hs/semana",
+            note: "88hs/mes base",
           },
         ].map(({ key, label, color, bg, note }) => {
           const hs = regimeHours[key] ?? REGIMES[key].hours;

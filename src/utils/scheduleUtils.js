@@ -93,10 +93,10 @@ export function countPerTurn(
 
 export const isWorkShift = (ct) =>
   ["TM", "TT", "TN", "EARLY", "LATE"].includes(ct);
-// Máximo consecutivo por régimen (TM/TT): R27=4, R15=6, TN=2
+// Máximo consecutivo por régimen (TM/TT): Reg27=4, Reg15=6, TN=2
 export function maxConsecForEmp(emp) {
   if (emp.turn === "TN") return 2;
-  return emp.regime === "R15" ? 6 : 4;
+  return emp.regime === "Reg15" ? 6 : 4;
 }
 
 export function consecutivesBefore(next, empId, day) {
@@ -138,6 +138,8 @@ export function autoFillAll(
 ) {
   const next = { ...schedule };
   const original = { ...schedule };
+  // Semilla aleatoria para que cada ejecución produzca un diagrama distinto
+  const randSeed = Math.floor(Math.random() * 97);
   const byTurn = { TM: [], TT: [], TN: [] };
   // La jefa se excluye del staff operativo — tiene su propio cronograma pero no cuenta como cobertura
   // PMP incluidos en byTurn para generar su cronograma, pero excluidos de conteos de cobertura
@@ -252,7 +254,7 @@ export function autoFillAll(
         const pairIdx = Math.floor(
           (empIdxInTurn * validos.length) / totalInTurn,
         );
-        findePar = validos[Math.abs(pairIdx) % validos.length];
+        findePar = validos[(Math.abs(pairIdx) + randSeed) % validos.length];
         pairIdxByTurn[turn]++;
         setFranco(emp.id, findePar.sat);
         setFranco(emp.id, findePar.sun);
@@ -426,19 +428,18 @@ export function autoFillAll(
 
       if (turn === "TN") {
         // ── Patrón TN: N N F F … (prioridad), sino N N F ──
-        // Respeta celdas bloqueadas/protegidas: si un día no está disponible
-        // se salta en el patrón pero se mantiene el ritmo.
-        let workStreak = 0; // noches consecutivas asignadas
-        let francoStreak = 0; // francos consecutivos del patrón
         const WORK_BLOCK = 2;
-        const FRANCO_PREF = 2; // preferido
-        const FRANCO_MIN = 1; // mínimo si no alcanza
+        const FRANCO_PREF = 2;
+        const FRANCO_MIN = 1;
+        // Rotar available aleatoriamente para variar el punto de inicio del patrón
+        const tnRot = available.length > 0 ? (randSeed + empIdx) % available.length : 0;
+        const rotAvail = [...available.slice(tnRot), ...available.slice(0, tnRot)];
 
         // Fase 1: intentar N N F F
         let phase = "work"; // "work" | "franco"
         let wCount = 0,
           fCount = 0;
-        for (const d of available) {
+        for (const d of rotAvail) {
           if (toWork.size >= effectiveNeeded) break;
           // Si el día está bloqueado (puesto por usuario), lo tratamos como franco de corte
           if (blocked(emp.id, d) || isProtected(emp.id, d)) {
@@ -481,7 +482,7 @@ export function autoFillAll(
           phase = "work";
           wCount = 0;
           fCount = 0;
-          for (const d of available) {
+          for (const d of rotAvail) {
             if (toWork.size >= effectiveNeeded) break;
             if (blocked(emp.id, d) || isProtected(emp.id, d)) {
               if (phase === "work") {
@@ -525,34 +526,24 @@ export function autoFillAll(
           }
         }
       } else {
-        // ── TM / TT: secuencial con corte obligatorio al llegar a maxConsec ──
-        // Recorre todos los días del mes en orden, respetando:
-        //  - Días no disponibles (bloqueados/protegidos) cuentan como franco si no son turno
-        //  - Al llegar a maxConsec consecutivos, el siguiente disponible es OBLIGATORIAMENTE franco
-        //  - Cualquier franco (usuario o sistema) reinicia la racha
-        const availSet = new Set(available);
-        let streak = 0; // racha de trabajo actual
-        let remaining = effectiveNeeded;
-
-        for (let d = 1; d <= daysInMonth && remaining > 0; d++) {
-          const v = next[`${emp.id}-${d}`];
-          if (!availSet.has(d)) {
-            // Día no disponible: si es turno suma racha, si no la resetea
-            if (isWorkShift(v)) streak++;
-            else streak = 0;
-            continue;
+        // ── TM / TT: selección aleatoria respetando maxConsec ──
+        const shuffled = [...available].sort(() => Math.random() - 0.5);
+        for (const d of shuffled) {
+          if (toWork.size >= effectiveNeeded) break;
+          // Contar racha si se agregara este día
+          let before = 0;
+          for (let dd = d - 1; dd >= 1; dd--) {
+            if (toWork.has(dd) || isWorkShift(next[`${emp.id}-${dd}`])) before++;
+            else break;
           }
-          // Día disponible
-          if (streak >= maxConsec) {
-            // Corte obligatorio — deja como franco, resetea racha
-            streak = 0;
-          } else {
-            toWork.add(d);
-            streak++;
-            remaining--;
+          let after = 0;
+          for (let dd = d + 1; dd <= daysInMonth; dd++) {
+            if (toWork.has(dd) || isWorkShift(next[`${emp.id}-${dd}`])) after++;
+            else break;
           }
+          if (before + 1 + after <= maxConsec) toWork.add(d);
         }
-        // Fallback: si faltan días (mes muy corto o restricciones muy estrictas)
+        // Fallback: si quedan días faltantes, completar en orden calendario
         if (toWork.size < effectiveNeeded) {
           for (const d of available) {
             if (toWork.size >= effectiveNeeded) break;
@@ -809,6 +800,17 @@ export function autoFillAll(
     for (const di of workDays) {
       if (worked <= target + tHours) break;
       if (countPerTurnInNext(next, employees, di.day, emp.turn) <= 4) continue;
+      let before = 0;
+      for (let d = di.day - 1; d >= 1; d--) {
+        if (!isWorkShift(next[`${emp.id}-${d}`])) before++;
+        else break;
+      }
+      let after = 0;
+      for (let d = di.day + 1; d <= daysInMonth; d++) {
+        if (!isWorkShift(next[`${emp.id}-${d}`])) after++;
+        else break;
+      }
+      if (before + 1 + after > MAX_CONSEC_FRANCO) continue;
       next[`${emp.id}-${di.day}`] = "F";
       worked -= tHours;
     }
@@ -965,6 +967,18 @@ export function autoFillAll(
 
     for (const di of workDays) {
       if (worked <= target) break;
+      // No convertir si crearía una racha de francos > MAX_CONSEC_FRANCO
+      let before = 0;
+      for (let d = di.day - 1; d >= 1; d--) {
+        if (!isWorkShift(next[`${emp.id}-${d}`])) before++;
+        else break;
+      }
+      let after = 0;
+      for (let d = di.day + 1; d <= daysInMonth; d++) {
+        if (!isWorkShift(next[`${emp.id}-${d}`])) after++;
+        else break;
+      }
+      if (before + 1 + after > MAX_CONSEC_FRANCO) continue;
       next[`${emp.id}-${di.day}`] = "F";
       worked -= tHours;
     }
@@ -1192,9 +1206,9 @@ export function autoFillAll(
   // PASO 11 — ESCANEO FINAL: cumplimiento de todas las reglas
   //
   // Reglas por turno:
-  //   TN  → patrón N N F F (máx 2 noches, máx 2 francos)
-  //   TM/TT R27 → máx 4 trabajo, máx 2 francos
-  //   TM/TT R15 → máx 6 trabajo, máx 2 francos
+  //   TN    → patrón N N F F (máx 2 noches, máx 3 francos)
+  //   TM/TT Reg27 → máx 4 trabajo, máx 3 francos
+  //   TM/TT Reg15 → máx 6 trabajo, máx 3 francos
   //
   // Múltiples pasadas hasta que no haya violaciones.
   // ═══════════════════════════════════════════════════════════════
@@ -1206,8 +1220,8 @@ export function autoFillAll(
 
     for (const emp of employees) {
       if (emp.id === jefeId || pmpIds.has(emp.id)) continue;
-      const maxWork = maxConsecForEmp(emp); // TN=2, R27=4, R15=6
-      const maxFranco = 2; // nunca más de 2 francos seguidos
+      const maxWork = maxConsecForEmp(emp); // TN=2, Reg27=4, Reg15=6
+      const maxFranco = MAX_CONSEC_FRANCO; // hasta 3 francos seguidos
       const tHours = CELL_TYPES[emp.turn]?.hours || 7;
 
       let workStreak = 0;

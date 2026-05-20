@@ -36,9 +36,15 @@ export default function HospitalScheduler({ currentUser, onLogout }) {
 
   const [year, setYear] = useState(saved?.year ?? now.getFullYear());
   const [month, setMonth] = useState(saved?.month ?? now.getMonth());
-  const [employees, setEmployees] = useState(
-    saved?.employees ?? INITIAL_EMPLOYEES,
-  );
+  const migrateRegime = (r) => {
+    if (r === "R15" || r === "ENF") return "Reg15";
+    if (r === "R27" || r === "LIC") return "Reg27";
+    return r;
+  };
+  const [employees, setEmployees] = useState(() => {
+    const emps = saved?.employees ?? INITIAL_EMPLOYEES;
+    return emps.map((e) => ({ ...e, regime: migrateRegime(e.regime) }));
+  });
   const [schedule, setSchedule] = useState(saved?.schedule ?? {});
   const [larDays, setLarDays] = useState(() => new Set(saved?.larDays ?? []));
   const [holidays, setHolidays] = useState(saved?.holidays ?? []);
@@ -108,9 +114,15 @@ export default function HospitalScheduler({ currentUser, onLogout }) {
     desc: "",
   });
 
-  const [regimeHours, setRegimeHours] = useState(
-    saved?.regimeHours ?? { R15: 160, R27: 144, H24: 88 },
-  );
+  const [regimeHours, setRegimeHours] = useState(() => {
+    const rh = saved?.regimeHours ?? {};
+    const migrated = { ...rh };
+    if (migrated.R15 !== undefined && migrated.Reg15 === undefined) { migrated.Reg15 = migrated.R15; delete migrated.R15; }
+    if (migrated.R27 !== undefined && migrated.Reg27 === undefined) { migrated.Reg27 = migrated.R27; delete migrated.R27; }
+    if (migrated.ENF !== undefined && migrated.Reg15 === undefined) { migrated.Reg15 = migrated.ENF; delete migrated.ENF; }
+    if (migrated.LIC !== undefined && migrated.Reg27 === undefined) { migrated.Reg27 = migrated.LIC; delete migrated.LIC; }
+    return { Reg15: 146, Reg27: 132, H24: 88, ...migrated };
+  });
   const getRegimeHours = useCallback(
     (key) => regimeHours[key] ?? REGIMES[key]?.hours ?? 160,
     [regimeHours],
@@ -366,6 +378,17 @@ export default function HospitalScheduler({ currentUser, onLogout }) {
         out.push({
           type: diff > 0 ? "info" : "warning",
           msg: `${emp.name}: ${worked}hs cargadas / ${target}hs objetivo (${diff > 0 ? "faltan" : "sobran"} ${Math.abs(diff)}hs)`,
+        });
+    }
+    for (const emp of employees) {
+      let licCount = 0;
+      for (let d = 1; d <= daysInMonth; d++) {
+        if (schedule[`${emp.id}-${d}`] === "LIC") licCount++;
+      }
+      if (licCount > 21)
+        out.push({
+          type: "warning",
+          msg: `${emp.name}: ${licCount} días de licencia (máx 21)`,
         });
     }
     const isFreeCell = (empId, day) => {

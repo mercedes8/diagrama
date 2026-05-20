@@ -32,8 +32,8 @@ export const CELL_TYPES = {
 };
 
 export const REGIMES = {
-  R15: { label: "Régimen 15", hours: 160 },
-  R27: { label: "Régimen 27", hours: 144 },
+  Reg15: { label: "Reg15 – Enf. Profesional", hours: 146 },
+  Reg27: { label: "Reg27 – Licenciado", hours: 132 },
   H24: { label: "24hs Semanal", hours: 88 },
 };
 
@@ -41,7 +41,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 1,
     name: "Spinoza Claudia",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TM",
     reduction: 0,
     note: "",
@@ -49,7 +49,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 2,
     name: "Nuñez Celestina",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TM",
     reduction: 0,
     note: "",
@@ -57,7 +57,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 3,
     name: "Ajaya Veronica",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TM",
     reduction: 25,
     note: "Red.25%",
@@ -65,7 +65,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 4,
     name: "Lazzaro Claudia",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TM",
     reduction: 0,
     note: "",
@@ -73,7 +73,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 5,
     name: "Morganti Gisela",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TM",
     reduction: 0,
     note: "",
@@ -81,7 +81,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 6,
     name: "Quiroga Jesica",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TM",
     reduction: 0,
     note: "",
@@ -89,7 +89,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 7,
     name: "Marino Laura",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TM",
     reduction: 0,
     note: "",
@@ -97,7 +97,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 8,
     name: "Martinez Yenny",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TM",
     reduction: 0,
     note: "",
@@ -105,7 +105,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 9,
     name: "Quezada Daiana",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TM",
     reduction: 0,
     note: "Ingr.09/25",
@@ -113,7 +113,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 10,
     name: "Dominguez Yamila",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TM",
     reduction: 0,
     note: "",
@@ -121,7 +121,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 11,
     name: "Venturini Geraldine",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TM",
     reduction: 0,
     note: "",
@@ -129,7 +129,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 12,
     name: "Pereira Gisel",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TM",
     reduction: 0,
     note: "",
@@ -137,7 +137,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 13,
     name: "Abarza Alejandra",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TT",
     reduction: 0,
     note: "",
@@ -145,7 +145,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 14,
     name: "Nievas Eliana",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TT",
     reduction: 0,
     note: "",
@@ -153,7 +153,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 15,
     name: "Peña Janet",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TT",
     reduction: 0,
     note: "",
@@ -161,7 +161,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 16,
     name: "Aguirre Tamara",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TT",
     reduction: 0,
     note: "Ingr.06/25",
@@ -169,7 +169,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 17,
     name: "Mardones Claudia",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TT",
     reduction: 0,
     note: "",
@@ -177,7 +177,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 18,
     name: "Condori Joana",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TN",
     reduction: 0,
     note: "",
@@ -185,7 +185,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 19,
     name: "Bullones Priscila",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TN",
     reduction: 0,
     note: "",
@@ -193,7 +193,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 20,
     name: "Garcia Laura",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TN",
     reduction: 0,
     note: "",
@@ -201,7 +201,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 21,
     name: "Castilo Natalia",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TN",
     reduction: 0,
     note: "",
@@ -217,7 +217,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 23,
     name: "Gomez Betiana",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TN",
     reduction: 0,
     note: "",
@@ -225,7 +225,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 24,
     name: "Quispe Andrea",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TN",
     reduction: 0,
     note: "",
@@ -233,7 +233,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 25,
     name: "Diaz Eliana",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TN",
     reduction: 0,
     note: "",
@@ -241,7 +241,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 26,
     name: "Olmedo Melisa",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TN",
     reduction: 0,
     note: "",
@@ -249,7 +249,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 27,
     name: "Bustos Elizabeth",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TN",
     reduction: 0,
     note: "",
@@ -257,7 +257,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 28,
     name: "Perez Sabrina",
-    regime: "R15",
+    regime: "Reg15",
     turn: "TN",
     reduction: 0,
     note: "",
@@ -265,7 +265,7 @@ export const INITIAL_EMPLOYEES = [
   {
     id: 29,
     name: "Siles Liliana",
-    regime: "R27",
+    regime: "Reg27",
     turn: "TN",
     reduction: 0,
     note: "Part.med.",
